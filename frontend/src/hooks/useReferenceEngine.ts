@@ -97,6 +97,7 @@ export function useReferenceEngine(): UseReferenceEngineReturn {
   const resolvedContent = useReferenceStore((s) => s.resolvedContent);
   const loadState = useReferenceStore((s) => s.loadState);
   const setActive = useReferenceStore((s) => s.setActive);
+  const showResolved = useReferenceStore((s) => s.showResolved);
   const goBackStore = useReferenceStore((s) => s.goBack);
   const goForwardStore = useReferenceStore((s) => s.goForward);
   const canGoBackStore = useReferenceStore((s) => s.canGoBack());
@@ -166,6 +167,23 @@ export function useReferenceEngine(): UseReferenceEngineReturn {
 
   // ─── Navegación historial ─────────────────────────────────────
 
+  // Resuelve el identifier destino tras mover el cursor: intenta caché y,
+  // si falló (LRU evicta), re-resuelve desde historyRefs SIN re-empujar historial.
+  const applyHistoryEntry = useCallback(
+    async (identifier: string): Promise<void> => {
+      const cached = engine.peekCache(identifier);
+      if (cached) {
+        showResolved(cached.reference, { ...cached, source: "cache" as const });
+        return;
+      }
+      const ref = useReferenceStore.getState().historyRefs[identifier];
+      if (!ref) return; // No hay forma de re-resolver
+      const resolved = await engine.resolveReference(ref);
+      showResolved(ref, resolved);
+    },
+    [engine, showResolved],
+  );
+
   const goBack = useCallback(async (): Promise<void> => {
     const { history, historyCursor } = useReferenceStore.getState();
     if (historyCursor <= 0) return;
@@ -175,14 +193,8 @@ export function useReferenceEngine(): UseReferenceEngineReturn {
     if (!identifier) return; // Check ANTES de mover cursor → evita estado inconsistente
 
     goBackStore(); // mueve cursor y pone LOADING
-
-    const cached = engine.peekCache(identifier);
-    if (cached) {
-      setActive(cached.reference, { ...cached, source: "cache" as const });
-    }
-    // Si no está en caché, el usuario debería haberla resuelto antes
-    // (el historial solo contiene references ya visitadas)
-  }, [engine, goBackStore, setActive]);
+    await applyHistoryEntry(identifier);
+  }, [goBackStore, applyHistoryEntry]);
 
   const goForward = useCallback(async (): Promise<void> => {
     const { history, historyCursor } = useReferenceStore.getState();
@@ -193,12 +205,8 @@ export function useReferenceEngine(): UseReferenceEngineReturn {
     if (!identifier) return;
 
     goForwardStore();
-
-    const cached = engine.peekCache(identifier);
-    if (cached) {
-      setActive(cached.reference, { ...cached, source: "cache" as const });
-    }
-  }, [engine, goForwardStore, setActive]);
+    await applyHistoryEntry(identifier);
+  }, [goForwardStore, applyHistoryEntry]);
 
   // ─── Caché ────────────────────────────────────────────────────
 

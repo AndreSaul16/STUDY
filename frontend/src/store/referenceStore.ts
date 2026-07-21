@@ -28,11 +28,15 @@ interface ReferenceState {
   history: string[];
   /** Índice actual en el historial (para back/forward) */
   historyCursor: number;
+  /** Referencias visitadas por identifier (para re-resolver al navegar) */
+  historyRefs: Record<string, Reference>;
   /** Favoritos — identifiers marcados */
   favorites: string[];
 
-  /** Establece la referencia activa y su contenido resuelto */
+  /** Establece la referencia activa y su contenido resuelto (empuja al historial) */
   setActive: (ref: Reference, resolved: ResolvedReference) => void;
+  /** Muestra una referencia resuelta SIN alterar el historial (para back/forward) */
+  showResolved: (ref: Reference, resolved: ResolvedReference) => void;
   /** Navega atrás en el historial */
   goBack: () => void;
   /** Navega adelante en el historial */
@@ -55,10 +59,11 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
   loadState: LOAD_STATES.IDLE,
   history: [],
   historyCursor: -1,
+  historyRefs: {},
   favorites: [],
 
   setActive: (ref, resolved) => {
-    const { history, historyCursor } = get();
+    const { history, historyCursor, historyRefs } = get();
     // Truncar historial adelante
     const truncated = history.slice(0, historyCursor + 1);
     const newHistory = [...truncated, ref.identifier];
@@ -69,7 +74,18 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
       loadState: LOAD_STATES.LOADED,
       history: newHistory,
       historyCursor: newHistory.length - 1,
+      historyRefs: { ...historyRefs, [ref.identifier]: ref },
     });
+  },
+
+  showResolved: (ref, resolved) => {
+    // Actualiza el panel sin tocar history/historyCursor (navegación back/forward)
+    set((s) => ({
+      activeReference: ref,
+      resolvedContent: resolved,
+      loadState: LOAD_STATES.LOADED,
+      historyRefs: { ...s.historyRefs, [ref.identifier]: ref },
+    }));
   },
 
   goBack: () => {
@@ -108,5 +124,6 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
       loadState: LOAD_STATES.IDLE,
       history: [],
       historyCursor: -1,
+      historyRefs: {},
     }),
 }));
