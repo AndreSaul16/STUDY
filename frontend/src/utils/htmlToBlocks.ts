@@ -26,14 +26,30 @@ export function htmlToBlocks(html: string, startBlockId = 0): PublicationBlock[]
 
   // Iterar sobre todos los elementos del body
   const body = doc.body;
+  // Bloques hoja que emitimos directamente.
+  const LEAF_BLOCKS = ["p", "h1", "h2", "h3", "li", "img"];
+  // Contenedores: descendemos a sus hijos (FILTER_SKIP) en lugar de emitirlos,
+  // para no duplicar el texto (contenedor + hijo).
+  const CONTAINERS = ["div", "ul", "ol", "figure", "blockquote"];
+
   const walker = document.createTreeWalker(body, NodeFilter.SHOW_ELEMENT, {
     acceptNode(node) {
       if (!(node instanceof Element)) return NodeFilter.FILTER_SKIP;
       const tag = node.tagName.toLowerCase();
-      // Solo procesar elementos de bloque relevantes
-      if (["p", "h1", "h2", "h3", "div", "figure", "img", "blockquote", "li", "ul", "ol"].includes(tag)) {
+      if (LEAF_BLOCKS.includes(tag)) {
         return NodeFilter.FILTER_ACCEPT;
       }
+      // div/blockquote "hoja" (sin bloques hijos): aceptar para no perder su texto.
+      if (tag === "div" || tag === "blockquote") {
+        const hasBlockChildren = node.querySelector(
+          [...LEAF_BLOCKS, ...CONTAINERS].join(","),
+        );
+        if (!hasBlockChildren && (node.textContent?.trim() ?? "")) {
+          return NodeFilter.FILTER_ACCEPT;
+        }
+        return NodeFilter.FILTER_SKIP;
+      }
+      // Resto de contenedores (ul, ol, figure, …) → descender sin emitir.
       return NodeFilter.FILTER_SKIP;
     },
   });
@@ -69,8 +85,9 @@ export function htmlToBlocks(html: string, startBlockId = 0): PublicationBlock[]
       blockType = BLOCK_TYPES.PARAGRAPH;
       content = text;
     } else if (tag === "p") {
-      // Preservar el HTML interno para mantener links y spans
-      content = el.innerHTML.trim();
+      // Usar textContent (no innerHTML) — el contenido se renderiza como texto
+      // seguro; las referencias se detectan sobre el texto.
+      content = text;
       blockType = BLOCK_TYPES.PARAGRAPH;
     } else if (tag === "li" || tag === "ul" || tag === "ol") {
       // Listas → párrafos individuales

@@ -60,13 +60,8 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
     containerSelector: "[data-reader-content]",
   });
 
-  // Contenido concatenado para búsqueda
-  const fullContent = article.blocks
-    .map((b) => b.content)
-    .join("\n\n");
-
   const search = useChapterSearch({
-    content: fullContent,
+    blocks: article.blocks,
     containerRef: scrollRef,
   });
 

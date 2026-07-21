@@ -1,13 +1,21 @@
 import { useMemo, useState, useCallback, useEffect } from "react";
 
-interface UseChapterSearchOptions {
-  /** Texto completo del capítulo o artículo a buscar */
+interface ChapterBlock {
+  blockId: number;
   content: string;
+}
+
+interface UseChapterSearchOptions {
+  /** Bloques del capítulo/artículo a buscar */
+  blocks: ChapterBlock[];
   /** Ref al contenedor scrollable donde resaltar resultados */
   containerRef: React.RefObject<HTMLElement | null>;
 }
 
 interface Match {
+  /** Bloque donde ocurre el match (para scroll via data-block-id) */
+  blockId: number;
+  /** Offset dentro del content del bloque */
   index: number;
   length: number;
   /** Texto del match */
@@ -32,7 +40,7 @@ interface UseChapterSearchReturn {
  * y scrolla al match activo.
  */
 export function useChapterSearch({
-  content,
+  blocks,
   containerRef,
 }: UseChapterSearchOptions): UseChapterSearchReturn {
   const [query, setQuery] = useState("");
@@ -41,22 +49,25 @@ export function useChapterSearch({
   const matches = useMemo<Match[]>(() => {
     if (!query.trim()) return [];
     const q = query.trim();
-    const lower = content.toLowerCase();
     const ql = q.toLowerCase();
     const result: Match[] = [];
-    let from = 0;
-    while (true) {
-      const idx = lower.indexOf(ql, from);
-      if (idx === -1) break;
-      result.push({
-        index: idx,
-        length: q.length,
-        text: content.slice(idx, idx + q.length),
-      });
-      from = idx + q.length;
+    for (const block of blocks) {
+      const lower = block.content.toLowerCase();
+      let from = 0;
+      while (true) {
+        const idx = lower.indexOf(ql, from);
+        if (idx === -1) break;
+        result.push({
+          blockId: block.blockId,
+          index: idx,
+          length: q.length,
+          text: block.content.slice(idx, idx + q.length),
+        });
+        from = idx + q.length;
+      }
     }
     return result;
-  }, [content, query]);
+  }, [blocks, query]);
 
   // Reset cursor al cambiar query
   useEffect(() => {
@@ -75,15 +86,17 @@ export function useChapterSearch({
       if (idx < 0 || idx >= matches.length) return;
       const container = containerRef.current;
       if (!container) return;
-      // Buscar un elemento marcado con data-search-index
+      // Scroll al bloque que contiene el match (via data-block-id que renderiza BlockRenderer)
+      const match = matches[idx];
+      if (!match) return;
       const el = container.querySelector<HTMLElement>(
-        `[data-search-index="${idx}"]`,
+        `[data-block-id="${match.blockId}"]`,
       );
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     },
-    [containerRef, matches.length],
+    [containerRef, matches],
   );
 
   const goToNext = useCallback(() => {
