@@ -1,5 +1,6 @@
 import { useCallback, useRef, useEffect } from "react";
 import { useAIStore } from "@/store/aiStore";
+import { parseSSEEvent, splitSSEEvents } from "@/utils/sse";
 import type {
   AISkill,
   AIContextDTO,
@@ -62,6 +63,9 @@ interface UseAIStreamReturn {
 
 export function useAIStream(): UseAIStreamReturn {
   const abortRef = useRef<AbortController | null>(null);
+  // Identifica el stream activo: si arranca uno nuevo, los callbacks del
+  // anterior no deben tocar el store (evita clobber de resultados).
+  const generationRef = useRef(0);
 
   const streamState = useAIStore((s) => s.streamState);
   const activeSkill = useAIStore((s) => s.activeSkill);
@@ -92,6 +96,7 @@ export function useAIStream(): UseAIStreamReturn {
 
       const controller = new AbortController();
       abortRef.current = controller;
+      const myGeneration = ++generationRef.current;
 
       // Marcar inicio en el store
       startStream(skill);
@@ -136,10 +141,9 @@ export function useAIStream(): UseAIStreamReturn {
           // Acumular al buffer y procesar eventos completos
           buffer += decoder.decode(value, { stream: true });
 
-          // Los eventos SSE terminan con \n\n
-          const events = buffer.split("\n\n");
-          // El último elemento puede estar incompleto — guardarlo para la próxima
-          buffer = events.pop() ?? "";
+          // Los eventos SSE se separan por una línea en blanco
+          const { events, rest } = splitSSEEvents(buffer);
+          buffer = rest;
 
           for (const rawEvent of events) {
             if (!rawEvent.trim()) continue;
@@ -188,6 +192,10 @@ export function useAIStream(): UseAIStreamReturn {
           });
         }
       } catch (err) {
+        // Si ya arrancó otro stream, no tocar el store del stream nuevo.
+        if (generationRef.current !== myGeneration) {
+          return;
+        }
         if (controller.signal.aborted) {
           cancelStore();
         } else {
@@ -244,41 +252,25 @@ interface SSEHandlers {
  *   data: {"text":"El ","index":0}
  */
 function handleSSEEvent(raw: string, handlers: SSEHandlers): void {
-  const lines = raw.split("\n");
-  let eventType: string | null = null;
-  let dataLine: string | null = null;
+  const parsed = parseSSEEvent(raw);
+  if (!parsed) return;
 
-  for (const line of lines) {
-    if (line.startsWith("event:")) {
-      eventType = line.slice(6).trim();
-    } else if (line.startsWith("data:")) {
-      dataLine = line.slice(5).trim();
-    }
-  }
-
-  if (!eventType || !dataLine) return;
-
-  let data: unknown;
-  try {
-    data = JSON.parse(dataLine);
-  } catch {
-    return; // JSON inválido — ignorar
-  }
+  const { event: eventType, data } = parsed;
 
   switch (eventType as SSEEventType) {
     case SSE_EVENT_TYPES.METADATA:
-      handlers.onMetadata(data as SSEMetadataEvent);
+      handlers.onMetadata(data as unknown as SSEMetadataEvent);
       break;
     case SSE_EVENT_TYPES.TOKEN: {
-      const token = data as SSETokenEvent;
+      const token = data as unknown as SSETokenEvent;
       handlers.onToken(token.text);
       break;
     }
     case SSE_EVENT_TYPES.DONE:
-      handlers.onDone(data as SSEDoneEvent);
+      handlers.onDone(data as unknown as SSEDoneEvent);
       break;
     case SSE_EVENT_TYPES.ERROR:
-      handlers.onError(data as SSEErrorEvent);
+      handlers.onError(data as unknown as SSEErrorEvent);
       break;
     case SSE_EVENT_TYPES.CANCELLED:
       // El servidor confirmó cancelación — no action necesaria

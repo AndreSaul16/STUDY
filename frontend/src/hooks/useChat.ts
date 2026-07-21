@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { parseSSEEvent, splitSSEEvents } from "@/utils/sse";
 
 const API_BASE = import.meta.env.VITE_AI_API_BASE ?? "http://localhost:8000";
 const CHAT_ENDPOINT = `${API_BASE}/api/chat/stream`;
@@ -30,6 +31,16 @@ export function useChat(): UseChatReturn {
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  // Abortar el stream y bloquear setState al desmontar.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const send = useCallback(
     async (content: string) => {
@@ -48,6 +59,8 @@ export function useChat(): UseChatReturn {
 
       const controller = new AbortController();
       abortRef.current = controller;
+
+      let fullContent = "";
 
       try {
         const response = await fetch(CHAT_ENDPOINT, {
@@ -76,15 +89,14 @@ export function useChat(): UseChatReturn {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        let fullContent = "";
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split("\n\n");
-          buffer = events.pop() ?? "";
+          const { events, rest } = splitSSEEvents(buffer);
+          buffer = rest;
 
           for (const rawEvent of events) {
             if (!rawEvent.trim()) continue;
@@ -94,10 +106,12 @@ export function useChat(): UseChatReturn {
             switch (parsed.event) {
               case "token":
                 fullContent += String(parsed.data.text ?? "");
-                setStreamingContent(fullContent);
+                if (mountedRef.current) setStreamingContent(fullContent);
                 break;
               case "error":
-                setError(String(parsed.data.message ?? "Unknown error"));
+                if (mountedRef.current) {
+                  setError(String(parsed.data.message ?? "Unknown error"));
+                }
                 break;
               case "done":
                 // Stream completado
@@ -107,7 +121,7 @@ export function useChat(): UseChatReturn {
         }
 
         // Añadir respuesta del asistente al historial
-        if (fullContent) {
+        if (fullContent && mountedRef.current) {
           setMessages((prev) => [
             ...prev,
             { role: "assistant", content: fullContent },
@@ -115,26 +129,28 @@ export function useChat(): UseChatReturn {
         }
       } catch (err) {
         if (controller.signal.aborted) {
-          // Cancelado por el usuario — guardar contenido parcial
-          if (streamingContent) {
+          // Cancelado por el usuario — guardar contenido parcial (local, no del store)
+          if (fullContent && mountedRef.current) {
             setMessages((prev) => [
               ...prev,
-              { role: "assistant", content: streamingContent + " [cancelado]" },
+              { role: "assistant", content: fullContent + " [cancelado]" },
             ]);
           }
-        } else {
+        } else if (mountedRef.current) {
           const message = err instanceof Error ? err.message : "Unknown error";
           setError(message);
         }
       } finally {
-        setIsStreaming(false);
-        setStreamingContent("");
+        if (mountedRef.current) {
+          setIsStreaming(false);
+          setStreamingContent("");
+        }
         if (abortRef.current === controller) {
           abortRef.current = null;
         }
       }
     },
-    [messages, isStreaming, streamingContent],
+    [messages, isStreaming],
   );
 
   const cancel = useCallback(() => {
@@ -156,33 +172,4 @@ export function useChat(): UseChatReturn {
     cancel,
     clear,
   };
-}
-
-// ─── Parser SSE ──────────────────────────────────────────────────
-
-interface ParsedSSE {
-  event: string;
-  data: Record<string, unknown>;
-}
-
-function parseSSEEvent(raw: string): ParsedSSE | null {
-  const lines = raw.split("\n");
-  let eventType = "";
-  let dataLine = "";
-
-  for (const line of lines) {
-    if (line.startsWith("event:")) {
-      eventType = line.slice(6).trim();
-    } else if (line.startsWith("data:")) {
-      dataLine = line.slice(5).trim();
-    }
-  }
-
-  if (!eventType || !dataLine) return null;
-
-  try {
-    return { event: eventType, data: JSON.parse(dataLine) };
-  } catch {
-    return null;
-  }
 }
