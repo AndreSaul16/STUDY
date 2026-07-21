@@ -78,11 +78,22 @@ app.include_router(jw_router)
 app.include_router(references_router)
 
 
+# ---- Health & API routes (must be defined BEFORE SPA catch-all) ----
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 # ---- Frontend SPA static serving ----
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 if (FRONTEND_DIST / "index.html").exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/")
+    async def root():
+        return FileResponse(FRONTEND_DIST / "index.html")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
@@ -93,10 +104,6 @@ if (FRONTEND_DIST / "index.html").exists():
         if index.exists():
             return FileResponse(index)
         return {"detail": "Frontend not built"}
-
-    @app.get("/")
-    async def root():
-        return FileResponse(FRONTEND_DIST / "index.html")
 else:
     @app.get("/")
     async def root():
@@ -106,8 +113,3 @@ else:
             "docs": "/docs",
             "ai_health": "/api/ai/health",
         }
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
