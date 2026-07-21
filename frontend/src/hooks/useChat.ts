@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseSSEEvent, splitSSEEvents } from "@/utils/sse";
 
-const API_BASE = import.meta.env.VITE_AI_API_BASE ?? "http://localhost:8000";
+import { API_BASE } from "@/services/apiBase";
 const CHAT_ENDPOINT = `${API_BASE}/api/chat/stream`;
 
 interface ChatMessage {

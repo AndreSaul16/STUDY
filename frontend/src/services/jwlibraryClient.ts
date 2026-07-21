@@ -5,7 +5,7 @@
  * Maneja upload de archivos (multipart) y download del ZIP resultante.
  */
 
-const API_BASE = import.meta.env.VITE_AI_API_BASE ?? "http://localhost:8000";
+import { API_BASE } from "@/services/apiBase";
 
 export interface ImportResultDTO {
   success: boolean;
@@ -29,7 +29,7 @@ export interface ExportMarkDTO {
 export interface ExportRequestDTO {
   marks: ExportMarkDTO[];
   tags: { name: string; color: number }[];
-  note_tag_links: { mark_guid: string; tag_name: string }[];
+  note_tag_links: { note_mark_index: number; tag_name: string }[];
 }
 
 export const jwlibraryClient = {

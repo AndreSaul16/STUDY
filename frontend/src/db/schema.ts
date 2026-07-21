@@ -38,11 +38,15 @@ CREATE TABLE IF NOT EXISTS blocks (
 CREATE TABLE IF NOT EXISTS user_marks (
     mark_id TEXT PRIMARY KEY,           -- UUID local
     document_id INTEGER NOT NULL,
+    publication_key TEXT NOT NULL DEFAULT 'legacy',
     block_id INTEGER NOT NULL,
     color TEXT NOT NULL DEFAULT 'yellow',  -- yellow|green|blue|pink|orange
     start_offset INTEGER NOT NULL,
     end_offset INTEGER NOT NULL,
     selected_text TEXT NOT NULL,
+    start_token INTEGER NOT NULL DEFAULT 0,
+    end_token INTEGER NOT NULL DEFAULT 0,
+    token_count INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
     FOREIGN KEY (block_id) REFERENCES blocks(block_id) ON DELETE CASCADE
@@ -53,6 +57,7 @@ CREATE TABLE IF NOT EXISTS notes (
     note_id TEXT PRIMARY KEY,           -- UUID local
     mark_id TEXT,                       -- Vinculo a marca (opcional)
     document_id INTEGER NOT NULL,
+    publication_key TEXT NOT NULL DEFAULT 'legacy',
     block_id INTEGER,
     title TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL DEFAULT '',   -- HTML/Markdown enriquecido
@@ -98,8 +103,10 @@ CREATE TABLE IF NOT EXISTS history (
 
 -- ─── Índices para rendimiento ───────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_marks_document ON user_marks(document_id);
+CREATE INDEX IF NOT EXISTS idx_marks_publication_document ON user_marks(publication_key, document_id);
 CREATE INDEX IF NOT EXISTS idx_marks_block ON user_marks(block_id);
 CREATE INDEX IF NOT EXISTS idx_notes_document ON notes(document_id);
+CREATE INDEX IF NOT EXISTS idx_notes_publication_document ON notes(publication_key, document_id);
 CREATE INDEX IF NOT EXISTS idx_notes_mark ON notes(mark_id);
 CREATE INDEX IF NOT EXISTS idx_note_tags_note ON note_tags(note_id);
 CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
@@ -112,7 +119,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
     applied_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
-INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 `;
 
 /**

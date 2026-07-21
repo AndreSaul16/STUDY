@@ -51,12 +51,15 @@ interface ReferenceChipProps {
   reference: Reference;
   onClick: () => void;
   className?: string;
+  /** Texto del fragmento cuando una referencia se divide por un highlight. */
+  label?: string;
 }
 
 export function ReferenceChip({
   reference,
   onClick,
   className,
+  label,
 }: ReferenceChipProps) {
   const Icon = TYPE_ICONS[reference.type];
   return (
@@ -73,7 +76,7 @@ export function ReferenceChip({
       )}
     >
       <Icon width={11} height={11} className="shrink-0 opacity-70" />
-      <span>{referenceLabel(reference)}</span>
+      <span>{label ?? referenceLabel(reference)}</span>
     </button>
   );
 }

@@ -13,19 +13,26 @@ import type { Annotation, HighlightColor } from "@/types/domain";
 export function persistAnnotation(
   a: Omit<Annotation, "id" | "createdAt">,
   documentId: number,
+  publicationKey = "legacy",
+  blockContent = "",
 ): string {
+  const startToken = blockContent.slice(0, a.startOffset).match(/\S+/g)?.length ?? 0;
+  const tokenCount = a.selectedText.trim().match(/\S+/g)?.length ?? 0;
   const markId = marksRepository.create({
     documentId,
+    publicationKey,
     blockId: a.blockId,
     color: a.color,
     startOffset: a.startOffset,
     endOffset: a.endOffset,
     selectedText: a.selectedText,
+    startToken,
+    endToken: startToken + tokenCount,
+    tokenCount,
   });
   if (a.note != null && a.note !== "") {
     notesRepository.create({
-      markId,
-      documentId,
+      markId, documentId, publicationKey,
       blockId: a.blockId,
       content: a.note,
     });
@@ -34,8 +41,8 @@ export function persistAnnotation(
 }
 
 /** Carga todas las anotaciones de un documento desde SQLite. */
-export function loadAnnotations(documentId: number): Annotation[] {
-  const marks = marksRepository.getByDocument(documentId);
+export function loadAnnotations(documentId: number, publicationKey = "legacy"): Annotation[] {
+  const marks = marksRepository.getByDocument(publicationKey, documentId);
   return marks.map((m) => {
     const note = notesRepository.getByMarkId(m.mark_id);
     return {
@@ -57,13 +64,14 @@ export function updateAnnotationNote(
   note: string | null,
   documentId: number,
   blockId: number,
+  publicationKey = "legacy",
 ): void {
   const existing = notesRepository.getByMarkId(markId);
   if (note != null && note !== "") {
     if (existing) {
       notesRepository.update(existing.note_id, { content: note });
     } else {
-      notesRepository.create({ markId, documentId, blockId, content: note });
+      notesRepository.create({ markId, documentId, publicationKey, blockId, content: note });
     }
   } else if (existing) {
     notesRepository.delete(existing.note_id);

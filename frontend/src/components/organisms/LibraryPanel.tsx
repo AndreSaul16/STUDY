@@ -58,7 +58,7 @@ export function LibraryPanel({ className }: LibraryPanelProps) {
 
       // Cargar el primer documento en el reader
       if (result.documents.length > 0) {
-        const article = jwpubDocumentToArticle(result.documents[0]!);
+        const article = jwpubDocumentToArticle(result.documents[0]!, result.publication.symbol);
         setArticle(article);
       }
     } catch (e) {
@@ -72,7 +72,7 @@ export function LibraryPanel({ className }: LibraryPanelProps) {
     const doc = documents[index];
     if (!doc) return;
     setActiveDocument(index);
-    const article = jwpubDocumentToArticle(doc);
+    const article = jwpubDocumentToArticle(doc, activePublication?.symbol);
     setArticle(article);
   };
 

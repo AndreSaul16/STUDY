@@ -41,6 +41,7 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
   const dbReady = useDatabaseReady();
   const bumpDbRevision = useDbStore((s) => s.bumpDbRevision);
   const documentId = article.documentId;
+  const publicationKey = article.publicationSymbol ?? "legacy";
 
   const theme = useUIStore((s) => s.theme);
   const toggleTheme = useUIStore((s) => s.toggleTheme);
@@ -69,11 +70,11 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
   useEffect(() => {
     if (!dbReady) return;
     try {
-      setAnnotations(loadAnnotations(documentId));
+      setAnnotations(loadAnnotations(documentId, publicationKey));
     } catch (e) {
       console.warn("[reader] no se pudieron cargar anotaciones:", e);
     }
-  }, [dbReady, documentId, setAnnotations]);
+  }, [dbReady, documentId, publicationKey, setAnnotations]);
 
   const handleHighlight = useCallback(
     (color: HighlightColor) => {
@@ -89,7 +90,7 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
       let persistedId: string | undefined;
       if (dbReady) {
         try {
-          persistedId = persistAnnotation(payload, documentId);
+          persistedId = persistAnnotation(payload, documentId, publicationKey, article.blocks.find((block) => block.blockId === payload.blockId)?.content);
           bumpDbRevision();
         } catch (e) {
           console.warn("[reader] fallo al persistir la marca, se guarda en memoria:", e);
@@ -98,7 +99,7 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
       addAnnotation(payload, persistedId);
       clearSelection();
     },
-    [selection, addAnnotation, clearSelection, dbReady, documentId, bumpDbRevision],
+    [selection, addAnnotation, clearSelection, dbReady, documentId, publicationKey, article.blocks, bumpDbRevision],
   );
 
   const handleAddNote = useCallback(() => {
@@ -123,7 +124,7 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
       let persistedId: string | undefined;
       if (dbReady) {
         try {
-          persistedId = persistAnnotation(payload, documentId);
+          persistedId = persistAnnotation(payload, documentId, publicationKey, article.blocks.find((block) => block.blockId === payload.blockId)?.content);
           bumpDbRevision();
         } catch (e) {
           console.warn("[reader] fallo al persistir la nota, se guarda en memoria:", e);
@@ -132,7 +133,7 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
       addAnnotation(payload, persistedId);
       setPendingNoteSelection(null);
     },
-    [pendingNoteSelection, addAnnotation, dbReady, documentId, bumpDbRevision],
+    [pendingNoteSelection, addAnnotation, dbReady, documentId, publicationKey, article.blocks, bumpDbRevision],
   );
 
   // Anotación en edición de nota
@@ -285,6 +286,7 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
                       note,
                       documentId,
                       editingAnnotation.blockId,
+                      publicationKey,
                     );
                     bumpDbRevision();
                   } catch (e) {

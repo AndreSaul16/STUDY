@@ -27,6 +27,8 @@ export interface PublicationBlock {
 
 export interface Article {
   documentId: number;
+  /** Símbolo de la publicación; documentId no es global entre JWPUB. */
+  publicationSymbol?: string;
   title: string;
   blocks: PublicationBlock[];
 }

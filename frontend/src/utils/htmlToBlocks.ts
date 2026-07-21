@@ -125,10 +125,12 @@ export function htmlToBlocks(html: string, startBlockId = 0): PublicationBlock[]
  */
 export function jwpubDocumentToArticle(
   doc: { DocumentId: number; Title: string; Content: string },
-): { documentId: number; title: string; blocks: PublicationBlock[] } {
+  publicationSymbol?: string,
+): { documentId: number; publicationSymbol?: string; title: string; blocks: PublicationBlock[] } {
   const blocks = htmlToBlocks(doc.Content);
   return {
     documentId: doc.DocumentId,
+    publicationSymbol,
     title: doc.Title,
     blocks,
   };

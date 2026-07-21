@@ -51,6 +51,7 @@ function detectFTS5(database: Database): boolean {
 function applySchema(database: Database): void {
   // 1. Schema base — siempre aplicable
   database.exec(LOCAL_DB_SCHEMA_BASE);
+  migratePublicationScopes(database);
 
   // 2. Detectar FTS5 y aplicar schema FTS solo si está soportado
   fts5Available = detectFTS5(database);
@@ -64,6 +65,26 @@ function applySchema(database: Database): void {
   } else {
     console.info("[db] FTS5 no disponible — usando fallback LIKE para búsqueda");
   }
+}
+
+/** Migra instalaciones v1 sin descartar las anotaciones existentes. */
+function migratePublicationScopes(database: Database): void {
+  const markColumns = database.exec("PRAGMA table_info(user_marks)")[0]?.values ?? [];
+  if (!markColumns.some((column) => column[1] === "publication_key")) {
+    database.exec("ALTER TABLE user_marks ADD COLUMN publication_key TEXT NOT NULL DEFAULT 'legacy'");
+  }
+  for (const column of ["start_token", "end_token", "token_count"]) {
+    if (!markColumns.some((existing) => existing[1] === column)) {
+      database.exec(`ALTER TABLE user_marks ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+    }
+  }
+  const noteColumns = database.exec("PRAGMA table_info(notes)")[0]?.values ?? [];
+  if (!noteColumns.some((column) => column[1] === "publication_key")) {
+    database.exec("ALTER TABLE notes ADD COLUMN publication_key TEXT NOT NULL DEFAULT 'legacy'");
+  }
+  database.exec("CREATE INDEX IF NOT EXISTS idx_marks_publication_document ON user_marks(publication_key, document_id)");
+  database.exec("CREATE INDEX IF NOT EXISTS idx_notes_publication_document ON notes(publication_key, document_id)");
+  database.exec("INSERT OR IGNORE INTO schema_version (version) VALUES (2)");
 }
 
 // ─── IndexedDB helpers ───────────────────────────────────────────
@@ -160,6 +181,7 @@ function ensureSchema(database: Database): void {
     // Esquema no aplicado — aplicar todo (con detección FTS5)
     applySchema(database);
   } else {
+    migratePublicationScopes(database);
     // Schema base ya aplicado — pero re-detectar FTS5 por si la DB
     // fue creada con un motor distinto al actual
     fts5Available = detectFTS5(database);

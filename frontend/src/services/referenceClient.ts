@@ -5,7 +5,7 @@
  * texto real del versículo desde wol.jw.org en español (fallback MCP inglés).
  */
 
-const API_BASE = import.meta.env.VITE_AI_API_BASE ?? "http://localhost:8000";
+import { API_BASE } from "@/services/apiBase";
 
 export interface ResolvedScripture {
   identifier: string;

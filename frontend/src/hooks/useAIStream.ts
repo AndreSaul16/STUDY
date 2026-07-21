@@ -34,7 +34,7 @@ import { SSE_EVENT_TYPES, STREAM_STATES } from "@/types/ai";
  * se renderiza en un tick separado gracias al store de Zustand.
  */
 
-const API_BASE = import.meta.env.VITE_AI_API_BASE ?? "http://localhost:8000";
+import { API_BASE } from "@/services/apiBase";
 const ANALYZE_ENDPOINT = `${API_BASE}/api/ai/analyze`;
 
 interface UseAIStreamReturn {

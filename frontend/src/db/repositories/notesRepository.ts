@@ -8,6 +8,7 @@ export interface NoteRow {
   note_id: string;
   mark_id: string | null;
   document_id: number;
+  publication_key: string;
   block_id: number | null;
   title: string;
   content: string;
@@ -26,18 +27,20 @@ export const notesRepository = {
   create(params: {
     markId?: string | null;
     documentId: number;
+    publicationKey?: string;
     blockId?: number | null;
     title?: string;
     content: string;
   }): string {
     const noteId = genId();
     execute(
-      `INSERT INTO notes (note_id, mark_id, document_id, block_id, title, content)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO notes (note_id, mark_id, document_id, publication_key, block_id, title, content)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         noteId,
         params.markId ?? null,
         params.documentId,
+        params.publicationKey ?? "legacy",
         params.blockId ?? null,
         params.title ?? "",
         params.content,
@@ -87,6 +90,10 @@ export const notesRepository = {
       `SELECT * FROM notes ORDER BY last_modified DESC LIMIT ? OFFSET ?`,
       [limit, offset],
     );
+  },
+
+  getAllForExport(): NoteRow[] {
+    return queryAll<NoteRow>(`SELECT * FROM notes ORDER BY created_at, note_id`);
   },
 
   getWithTags(noteId: string): NoteWithTags | null {

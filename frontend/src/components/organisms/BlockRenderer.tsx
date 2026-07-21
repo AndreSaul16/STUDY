@@ -127,7 +127,7 @@ export function BlockRenderer({
 type Segment =
   | { kind: "plain"; text: string }
   | { kind: "reference"; text: string; ref: DetectedReference }
-  | { kind: "marked"; text: string; color: HighlightColor; note: string | null };
+  | { kind: "marked"; text: string; color: HighlightColor; note: string | null; ref?: DetectedReference };
 
 interface RenderedTextProps {
   content: string;
@@ -180,7 +180,13 @@ function RenderedText({
               MARK_BG[seg.color],
             )}
           >
-            {seg.text}
+            {seg.ref ? (
+              <ReferenceChip
+                reference={seg.ref.reference}
+                onClick={() => onOpenReference(seg.ref!.reference)}
+                label={seg.text}
+              />
+            ) : seg.text}
             {seg.note && (
               <button
                 aria-label="Ver nota"
@@ -199,76 +205,45 @@ function RenderedText({
 
 /**
  * Construye segmentos combinando referencias detectadas y anotaciones.
- * Prioridad: anotaciones > referencias > texto plano.
- * Si solapan, gana la anotación (el highlight es más explícito).
+ * Las fronteras de todos los rangos dividen el texto en intervalos. Así se
+ * mantienen los highlights solapados y una referencia sigue siendo clicable
+ * aunque esté parcialmente marcada.
  */
 function buildSegments(
   text: string,
   detected: DetectedReference[],
   annotations: Annotation[],
 ): Segment[] {
-  // Crear puntos de corte
-  type Cut = { pos: number; type: "ref-start" | "ref-end" | "ann-start" | "ann-end"; data: unknown };
-  const cuts: Cut[] = [];
-
-  for (const d of detected) {
-    cuts.push({ pos: d.start, type: "ref-start", data: d });
-    cuts.push({ pos: d.end, type: "ref-end", data: d });
+  const boundaries = new Set<number>([0, text.length]);
+  const validAnnotations = annotations.filter(
+    (annotation) => annotation.startOffset >= 0 && annotation.endOffset > annotation.startOffset && annotation.endOffset <= text.length,
+  );
+  for (const reference of detected) {
+    boundaries.add(Math.max(0, reference.start));
+    boundaries.add(Math.min(text.length, reference.end));
   }
-
-  for (const a of annotations) {
-    if (a.startOffset < 0 || a.endOffset > text.length) continue;
-    cuts.push({ pos: a.startOffset, type: "ann-start", data: a });
-    cuts.push({ pos: a.endOffset, type: "ann-end", data: a });
+  for (const annotation of validAnnotations) {
+    boundaries.add(annotation.startOffset);
+    boundaries.add(annotation.endOffset);
   }
-
-  // Ordenar cortes por posición
-  cuts.sort((a, b) => a.pos - b.pos);
-
+  const positions = [...boundaries].sort((a, b) => a - b);
   const segments: Segment[] = [];
-  let cursor = 0;
-  let activeRef: DetectedReference | null = null;
-  let activeAnn: Annotation | null = null;
-
-  for (const cut of cuts) {
-    // Texto plano antes del corte
-    if (cut.pos > cursor) {
-      if (activeAnn) {
-        segments.push({
-          kind: "marked",
-          text: text.slice(cursor, cut.pos),
-          color: activeAnn.color,
-          note: activeAnn.note,
-        });
-      } else if (activeRef) {
-        segments.push({
-          kind: "reference",
-          text: text.slice(cursor, cut.pos),
-          ref: activeRef,
-        });
-      } else {
-        segments.push({ kind: "plain", text: text.slice(cursor, cut.pos) });
-      }
+  for (let index = 0; index < positions.length - 1; index += 1) {
+    const start = positions[index]!;
+    const end = positions[index + 1]!;
+    if (start === end) continue;
+    const annotation = validAnnotations
+      .filter((candidate) => candidate.startOffset <= start && candidate.endOffset >= end)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const reference = detected.find((candidate) => candidate.start <= start && candidate.end >= end);
+    const segmentText = text.slice(start, end);
+    if (annotation) {
+      segments.push({ kind: "marked", text: segmentText, color: annotation.color, note: annotation.note, ...(reference ? { ref: reference } : {}) });
+    } else if (reference) {
+      segments.push({ kind: "reference", text: segmentText, ref: reference });
+    } else {
+      segments.push({ kind: "plain", text: segmentText });
     }
-
-    cursor = cut.pos;
-
-    // Procesar corte
-    if (cut.type === "ref-start") {
-      activeRef = cut.data as DetectedReference;
-    } else if (cut.type === "ref-end") {
-      activeRef = null;
-    } else if (cut.type === "ann-start") {
-      activeAnn = cut.data as Annotation;
-      activeRef = null; // anotación tiene prioridad
-    } else if (cut.type === "ann-end") {
-      activeAnn = null;
-    }
-  }
-
-  // Resto del texto
-  if (cursor < text.length) {
-    segments.push({ kind: "plain", text: text.slice(cursor) });
   }
 
   return segments;

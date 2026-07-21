@@ -49,6 +49,12 @@ export const tagsRepository = {
     );
   },
 
+  getAllNoteTagLinks(): { note_id: string; name: string }[] {
+    return queryAll<{ note_id: string; name: string }>(
+      `SELECT nt.note_id, t.name FROM note_tags nt JOIN tags t ON t.tag_id = nt.tag_id`,
+    );
+  },
+
   count(): number {
     const row = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM tags`);
     return row?.count ?? 0;

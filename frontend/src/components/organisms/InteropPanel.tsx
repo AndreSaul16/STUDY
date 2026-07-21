@@ -1,7 +1,10 @@
 import { useState, useRef } from "react";
 import { cn } from "@/utils/cn";
 import { jwlibraryClient } from "@/services/jwlibraryClient";
-import type { ImportResultDTO } from "@/services/jwlibraryClient";
+import type { ExportRequestDTO, ImportResultDTO } from "@/services/jwlibraryClient";
+import { marksRepository } from "@/db/repositories/marksRepository";
+import { notesRepository } from "@/db/repositories/notesRepository";
+import { tagsRepository } from "@/db/repositories/tagsRepository";
 import { Button } from "@/components/atoms/Button";
 import { Badge } from "@/components/atoms/Badge";
 import { Divider } from "@/components/atoms/Divider";
@@ -26,6 +29,42 @@ export function InteropPanel({ className }: InteropPanelProps) {
   const importFileRef = useRef<HTMLInputElement>(null);
   const exportFileRef = useRef<HTMLInputElement>(null);
 
+  const buildExportRequest = (): ExportRequestDTO => {
+    const notesByMark = new Map(
+      notesRepository.getAllForExport().filter((note) => note.mark_id).map((note) => [note.mark_id!, note]),
+    );
+    const marks = marksRepository.getAll().map((mark) => {
+      const tokenCount = mark.token_count || mark.selected_text.trim().match(/\S+/g)?.length || 0;
+      const note = notesByMark.get(mark.mark_id);
+      const colors: Record<string, number> = { yellow: 1, blue: 2, green: 3, orange: 4, pink: 7 };
+      return {
+        local_id: mark.mark_id,
+        document_id: mark.document_id,
+        block_index: mark.block_id,
+        color: colors[mark.color] ?? 1,
+        ranges: [{ start_token: mark.start_token, end_token: mark.end_token || tokenCount, token_count: tokenCount }],
+        ...(note ? { note: {
+          title: note.title,
+          content: note.content,
+          last_modified: new Date(note.last_modified * 1000).toISOString(),
+        } } : {}),
+      };
+    });
+    const markIndex = new Map(marks.map((mark, index) => [mark.local_id, index]));
+    const noteToMark = new Map(
+      notesRepository.getAllForExport().filter((note) => note.mark_id).map((note) => [note.note_id, note.mark_id!]),
+    );
+    return {
+      marks,
+      tags: tagsRepository.getAll().map((tag) => ({ name: tag.name, color: tag.color })),
+      note_tag_links: tagsRepository.getAllNoteTagLinks().flatMap((link) => {
+        const markId = noteToMark.get(link.note_id);
+        const index = markId ? markIndex.get(markId) : undefined;
+        return index === undefined ? [] : [{ note_mark_index: index, tag_name: link.name }];
+      }),
+    };
+  };
+
   const handleImport = async (file: File) => {
     setBusy(true);
     setError(null);
@@ -43,15 +82,7 @@ export function InteropPanel({ className }: InteropPanelProps) {
     setBusy(true);
     setError(null);
     try {
-      // TODO (B10): Leer marks/notes/tags reales de SQLite local.
-      // Por ahora exportamos un request vacío — el backend genera un
-      // .jwlibrary válido pero sin datos inyectados. Útil para validar
-      // el formato, pero no es un export real.
-      const request = {
-        marks: [],
-        tags: [],
-        note_tag_links: [],
-      };
+      const request = buildExportRequest();
       const blob = await jwlibraryClient.exportToFile(file, request);
       jwlibraryClient.downloadBlob(blob, "study-export.jwlibrary");
     } catch (e) {
@@ -65,13 +96,7 @@ export function InteropPanel({ className }: InteropPanelProps) {
     setBusy(true);
     setError(null);
     try {
-      // TODO (B10): Leer marks/notes/tags reales de SQLite local.
-      // Por ahora generamos un .jwlibrary vacío válido.
-      const request = {
-        marks: [],
-        tags: [],
-        note_tag_links: [],
-      };
+      const request = buildExportRequest();
       const blob = await jwlibraryClient.exportNew(request);
       jwlibraryClient.downloadBlob(blob, "study-new.jwlibrary");
     } catch (e) {
@@ -166,12 +191,6 @@ export function InteropPanel({ className }: InteropPanelProps) {
         <p className="font-ui text-xs text-muted-light dark:text-muted-dark">
           Inyecta tus notas y marcas en un .jwlibrary existente.
         </p>
-        <div className="rounded-md bg-amber-50 px-3 py-2 dark:bg-amber-900/20">
-          <p className="font-ui text-[10px] leading-relaxed text-amber-700 dark:text-amber-400">
-            ⚠ Demo: el export genera un .jwlibrary válido pero sin datos inyectados.
-            La lectura de SQLite local para poblar el export es una feature pendiente.
-          </p>
-        </div>
         <input
           ref={exportFileRef}
           type="file"

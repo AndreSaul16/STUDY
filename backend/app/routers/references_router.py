@@ -9,6 +9,7 @@ GET /api/references/resolve?identifier=scripture:efesios:4:15
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 
 from ..services.references import ReferenceResolutionError, resolve_reference
 
@@ -26,7 +27,7 @@ async def resolve(
 ):
     """Resuelve una referencia bíblica a su texto (español vía WOL)."""
     try:
-        resolved = resolve_reference(identifier)
+        resolved = await run_in_threadpool(resolve_reference, identifier)
     except ReferenceResolutionError:
         logger.exception("No se pudo resolver la referencia %s", identifier)
         raise HTTPException(404, "No se pudo resolver la referencia")

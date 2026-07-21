@@ -115,22 +115,8 @@ export function useTextSelection({
         // el offset calculado puede no coincidir exactamente con selectedText
         // si hay espacios colapsados. Aceptamos esta imprecisión para v1;
         // una solución exacta requeriría normalizar el DOM antes de medir.
-        const blockRange = document.createRange();
-        blockRange.selectNodeContents(blockEl);
-        const startOffset =
-          range.startOffset +
-          getOffsetWithin(
-            blockRange.startContainer,
-            range.startContainer,
-            blockEl as HTMLElement,
-          );
-        const endOffset =
-          range.endOffset +
-          getOffsetWithin(
-            blockRange.endContainer,
-            range.endContainer,
-            blockEl as HTMLElement,
-          );
+        const startOffset = getTextOffset(blockEl as HTMLElement, range.startContainer, range.startOffset);
+        const endOffset = getTextOffset(blockEl as HTMLElement, range.endContainer, range.endOffset);
 
         // Guard: offsets inválidos (selection fuera de rango o DOM corrupto)
         const blockTextLen = blockEl.textContent?.length ?? 0;
@@ -169,31 +155,13 @@ export function useTextSelection({
  * Calcula el offset acumulado de texto hasta un nodo dentro de un contenedor.
  * Necesario porque los highlights particionan el texto en múltiples text nodes.
  */
-function getOffsetWithin(
-  _root: Node,
-  target: Node,
-  container: HTMLElement,
-): number {
-  if (target === container) return 0;
-
-  let offset = 0;
-  const walker = document.createTreeWalker(
-    container,
-    NodeFilter.SHOW_TEXT,
-    null,
-  );
-
-  let current: Node | null = walker.currentNode;
-  while (current) {
-    if (current === target) break;
-    if (
-      current.nodeType === Node.TEXT_NODE &&
-      current.textContent
-    ) {
-      offset += current.textContent.length;
-    }
-    current = walker.nextNode();
+function getTextOffset(container: HTMLElement, boundaryNode: Node, boundaryOffset: number): number {
+  const prefix = document.createRange();
+  prefix.selectNodeContents(container);
+  try {
+    prefix.setEnd(boundaryNode, boundaryOffset);
+    return prefix.toString().length;
+  } catch {
+    return -1;
   }
-
-  return offset;
 }

@@ -5,7 +5,7 @@
  * Maneja upload de archivos .jwpub (multipart) y recepción de documentos.
  */
 
-const API_BASE = import.meta.env.VITE_AI_API_BASE ?? "http://localhost:8000";
+import { API_BASE } from "@/services/apiBase";
 
 export interface JWPUBDocument {
   DocumentId: number;

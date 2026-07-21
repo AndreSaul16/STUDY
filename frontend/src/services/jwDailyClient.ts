@@ -6,7 +6,7 @@
  * el texto diario de wol.jw.org.
  */
 
-const API_BASE = import.meta.env.VITE_AI_API_BASE ?? "http://localhost:8000";
+import { API_BASE } from "@/services/apiBase";
 
 export interface DailyText {
   date_iso: string;

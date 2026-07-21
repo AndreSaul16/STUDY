@@ -9,6 +9,7 @@ import datetime
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 
 from ..services.jw import DailyTextError, fetch_daily_text
 
@@ -33,7 +34,7 @@ async def get_daily_text(
             raise HTTPException(400, "Fecha inválida. Usa el formato YYYY-MM-DD.")
 
     try:
-        daily = fetch_daily_text(target)
+        daily = await run_in_threadpool(fetch_daily_text, target)
     except DailyTextError:
         logger.exception("Fallo al obtener el texto del día")
         raise HTTPException(502, "No se pudo obtener el texto del día")
