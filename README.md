@@ -90,7 +90,7 @@ STUDY/
 
 ### Prerrequisitos
 
-- **Node.js** 20+ y npm/pnpm
+- **Node.js** 20+ y **pnpm** (gestor de paquetes del frontend)
 - **Python** 3.10+
 - **Servidor MCP** `advenimus-jw-mcp` (instalado y en PATH)
 
@@ -103,9 +103,17 @@ source .venv/bin/activate  # Linux/Mac
 # .venv\Scripts\activate   # Windows
 pip install -r requirements.txt
 
+# Configurar variables de entorno
+cp .env.example .env
+# Editar .env y añadir OPENAI_API_KEY (y opcionalmente OPENAI_MODEL, JW_MCP_PATH)
+
 # Iniciar
 uvicorn app.main:app --reload --port 8000
 ```
+
+El backend carga automáticamente `backend/.env` al arrancar (via `python-dotenv`).
+`backend/.env.example` documenta las variables disponibles. `.env` está en `.gitignore`
+y nunca debe commitearse.
 
 El backend expone:
 - `http://localhost:8000/` — root info
@@ -135,8 +143,8 @@ service = MCPContentService(server_command="/ruta/a/advenimus-jw-mcp")
 
 ```bash
 cd frontend
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 El frontend se sirve en `http://localhost:5173`.
@@ -147,13 +155,13 @@ El frontend se sirve en `http://localhost:5173`.
 VITE_AI_API_BASE=http://localhost:8000
 ```
 
-### Activar OpenAI real (opcional)
+### IA: chat vs. análisis
 
-Por defecto, el backend usa `MockProvider` (no requiere API key). Para usar OpenAI:
-
-1. Instalar el SDK: `pip install openai`
-2. Configurar API key: `export OPENAI_API_KEY="sk-..."`
-3. En `backend/app/routers/ai_router.py`, modificar `get_ai_service()`:
+- **Chat** (`/api/chat/stream`) usa OpenAI real. Requiere `OPENAI_API_KEY` en `backend/.env`
+  (el SDK `openai` ya está en `requirements.txt`; no hace falta instalar nada aparte).
+- **Análisis** (`/api/ai/analyze`) usa por defecto `MockProvider` (no requiere API key).
+  Para usar OpenAI también aquí, edita `get_ai_service()` en
+  `backend/app/routers/ai_router.py`:
 
 ```python
 from ..services.ai.providers.openai_provider import OpenAIProvider
@@ -192,7 +200,8 @@ CREATE VIRTUAL TABLE notes_fts USING fts5(
 
 - Tokenizer `unicode61` con `remove_diacritics 2` maneja español.
 - Ranking con `bm25()` (menor score = más relevante).
-- Snippets con `snippet()` y highlight `<mark>`.
+- Snippets con `snippet()`; el resaltado usa delimitadores de control (no HTML)
+  que la UI convierte en elementos `<mark>` de React (sin `dangerouslySetInnerHTML`).
 - Triggers sincronizan FTS automáticamente con `notes`.
 
 ## Mapeo a userData.db (.jwlibrary)
@@ -219,7 +228,9 @@ CREATE VIRTUAL TABLE notes_fts USING fts5(
 
 ### Cálculo de tokens
 
-La app oficial usa "tokens" (palabras) como unidad de posición. El `SchemaMapper.calculate_tokens()` divide el texto por espacios y mapea offsets de caracteres a índices de tokens.
+La app oficial usa "tokens" (palabras) como unidad de posición. El frontend calcula
+los `start_token`/`end_token`/`token_count` y los envía en cada `RangeExportDTO`; el
+`SchemaMapper` los inserta directamente en `BlockRange`.
 
 ### Seguridad de inyección SQL
 
@@ -235,7 +246,7 @@ La app oficial usa "tokens" (palabras) como unidad de posición. El `SchemaMappe
 
 ```bash
 cd frontend
-npm run build
+pnpm build
 # dist/ contiene los archivos estáticos
 # Servir con nginx, Vercel, Netlify, etc.
 ```
