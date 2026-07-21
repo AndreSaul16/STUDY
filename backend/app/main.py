@@ -11,9 +11,12 @@ El MCPContentService existente se integra en fases posteriores.
 """
 
 import logging
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 # Cargar backend/.env ANTES de importar routers: chat_service lee OPENAI_*
 # como constantes a nivel de módulo en import time.
@@ -75,14 +78,34 @@ app.include_router(jw_router)
 app.include_router(references_router)
 
 
-@app.get("/")
-async def root():
-    return {
-        "name": "Study Backend",
-        "version": APP_VERSION,
-        "docs": "/docs",
-        "ai_health": "/api/ai/health",
-    }
+# ---- Frontend SPA static serving ----
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+if (FRONTEND_DIST / "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """Serve frontend SPA — catch-all fallback to index.html."""
+        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi"):
+            return {"detail": "Not Found"}
+        index = FRONTEND_DIST / "index.html"
+        if index.exists():
+            return FileResponse(index)
+        return {"detail": "Frontend not built"}
+
+    @app.get("/")
+    async def root():
+        return FileResponse(FRONTEND_DIST / "index.html")
+else:
+    @app.get("/")
+    async def root():
+        return {
+            "name": "Study Backend",
+            "version": APP_VERSION,
+            "docs": "/docs",
+            "ai_health": "/api/ai/health",
+        }
 
 
 @app.get("/health")
