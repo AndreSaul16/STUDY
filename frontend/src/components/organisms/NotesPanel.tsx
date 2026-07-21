@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
+import type { ReactNode } from "react";
 import { cn } from "@/utils/cn";
 import { useDatabaseReady } from "@/hooks/useDatabase";
 import { useVirtualList } from "@/hooks/useVirtualList";
 import { notesRepository } from "@/db/repositories/notesRepository";
-import { searchRepository } from "@/db/repositories/searchRepository";
+import { searchRepository, MARK_OPEN, MARK_CLOSE } from "@/db/repositories/searchRepository";
 import type { NoteRow } from "@/db/repositories/notesRepository";
 import type { SearchResult as SearchHit } from "@/db/repositories/searchRepository";
 import { Badge } from "@/components/atoms/Badge";
@@ -163,6 +164,39 @@ function NoteItem({ note }: { note: NoteRow }) {
   );
 }
 
+/**
+ * Renderiza un snippet resaltado como elementos React seguros.
+ * El snippet usa MARK_OPEN/MARK_CLOSE (caracteres de control) para delimitar
+ * las coincidencias, nunca HTML — así no hay riesgo de XSS.
+ */
+function renderSnippet(snippet: string) {
+  const parts = snippet.split(new RegExp(`([${MARK_OPEN}${MARK_CLOSE}])`));
+  const nodes: ReactNode[] = [];
+  let highlighting = false;
+  let key = 0;
+  for (const part of parts) {
+    if (part === MARK_OPEN) {
+      highlighting = true;
+      continue;
+    }
+    if (part === MARK_CLOSE) {
+      highlighting = false;
+      continue;
+    }
+    if (part === "") continue;
+    if (highlighting) {
+      nodes.push(
+        <mark key={key++} className="rounded bg-amber-200/70 dark:bg-amber-500/40">
+          {part}
+        </mark>,
+      );
+    } else {
+      nodes.push(<span key={key++}>{part}</span>);
+    }
+  }
+  return nodes;
+}
+
 function SearchResultItem({ hit }: { hit: SearchHit }) {
   return (
     <div className="flex h-full flex-col justify-center">
@@ -172,10 +206,9 @@ function SearchResultItem({ hit }: { hit: SearchHit }) {
           {hit.title || "(sin título)"}
         </p>
       </div>
-      <p
-        className="mt-0.5 line-clamp-2 font-reading text-sm italic text-muted-light dark:text-muted-dark"
-        dangerouslySetInnerHTML={{ __html: hit.snippet }}
-      />
+      <p className="mt-0.5 line-clamp-2 font-reading text-sm italic text-muted-light dark:text-muted-dark">
+        {renderSnippet(hit.snippet)}
+      </p>
     </div>
   );
 }

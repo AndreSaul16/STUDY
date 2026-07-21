@@ -21,8 +21,16 @@ export interface SearchResult {
   selected_text: string;
   document_id: number;
   rank: number; // Score (menor = más relevante en FTS5; mayor = mejor en fallback)
-  snippet: string; // Fragmento con highlight
+  snippet: string; // Fragmento con highlight (delimitado por MARK_OPEN/MARK_CLOSE)
 }
+
+/**
+ * Delimitadores de resaltado en snippets. Usamos caracteres de control
+ * (no HTML) para que el resaltado NUNCA pueda inyectar markup: el componente
+ * de UI parte por estos caracteres y crea elementos React <mark>.
+ */
+export const MARK_OPEN = "\u0001";
+export const MARK_CLOSE = "\u0002";
 
 // ─── Normalización para fallback LIKE ────────────────────────────
 
@@ -87,9 +95,9 @@ function buildSnippet(text: string, terms: string[], maxLen = 80): string {
     if (snipIdx !== -1) {
       snippet =
         snippet.slice(0, snipIdx) +
-        "<mark>" +
+        MARK_OPEN +
         snippet.slice(snipIdx, snipIdx + termLower.length) +
-        "</mark>" +
+        MARK_CLOSE +
         snippet.slice(snipIdx + termLower.length);
     }
   }
@@ -135,7 +143,7 @@ function searchFTS5(query: string, limit: number, documentId?: number): SearchRe
          COALESCE(f.selected_text, '') as selected_text,
          f.document_id,
          bm25(notes_fts) as rank,
-         snippet(notes_fts, 4, '<mark>', '</mark>', '...', 20) as snippet
+         snippet(notes_fts, 4, char(1), char(2), '...', 20) as snippet
        FROM notes_fts f
        WHERE notes_fts MATCH ? AND f.document_id = ?
        ORDER BY rank
@@ -147,7 +155,7 @@ function searchFTS5(query: string, limit: number, documentId?: number): SearchRe
          COALESCE(f.selected_text, '') as selected_text,
          f.document_id,
          bm25(notes_fts) as rank,
-         snippet(notes_fts, 4, '<mark>', '</mark>', '...', 20) as snippet
+         snippet(notes_fts, 4, char(1), char(2), '...', 20) as snippet
        FROM notes_fts f
        WHERE notes_fts MATCH ?
        ORDER BY rank
