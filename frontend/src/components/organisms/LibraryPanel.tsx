@@ -8,6 +8,7 @@ import { Button } from "@/components/atoms/Button";
 import { Badge } from "@/components/atoms/Badge";
 import { Divider } from "@/components/atoms/Divider";
 import { IconBook } from "@/components/atoms/Icons";
+import { DailyTextCard } from "@/components/organisms/DailyTextCard";
 
 interface LibraryPanelProps {
   className?: string;
@@ -77,6 +78,9 @@ export function LibraryPanel({ className }: LibraryPanelProps) {
 
   return (
     <div className={cn("flex h-full flex-col overflow-y-auto p-4", className)}>
+      {/* Widget de inicio: texto del día (Examinemos las Escrituras) */}
+      <DailyTextCard className="mb-4" />
+
       <div className="mb-4">
         <h3 className="font-display text-xl text-reading-light dark:text-reading-dark">
           Biblioteca
