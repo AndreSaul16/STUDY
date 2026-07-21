@@ -1,1 +1,26 @@
+# Python
 __pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Env / secretos
+.env
+.env.*
+!.env.example
+
+# Node / frontend
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# DB / artefactos temporales
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+
+# SO / editor
+.DS_Store
+Thumbs.db
