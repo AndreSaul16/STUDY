@@ -96,7 +96,6 @@ async def analyze_stream(request: Request, ai_request: AIRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Nginx: desactivar buffering
-            "Access-Control-Allow-Origin": "*",  # CORS para dev
         },
     )
 

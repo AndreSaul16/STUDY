@@ -5,22 +5,25 @@ POST /api/chat/stream   — chat con streaming SSE
 GET  /api/chat/health   — health check del chat service
 GET  /api/chat/tools    — lista de herramientas MCP disponibles
 """
-import json
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+import logging
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from ..schemas.chat_schemas import (
     ChatRequest,
     ChatHealthResponse,
 )
-from ..services.ai.chat_service import get_chat_service, ChatService
+from ..services.ai.chat_service import get_chat_service, OPENAI_MODEL
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 @router.post("/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(chat_request: ChatRequest, request: Request):
     """
     Endpoint de chat con streaming SSE.
 
@@ -36,11 +39,18 @@ async def chat_stream(request: ChatRequest):
     except ValueError as e:
         raise HTTPException(503, str(e))
 
-    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    messages = [{"role": m.role, "content": m.content} for m in chat_request.messages]
 
     async def event_generator():
-        async for event in service.chat_stream(messages):
-            yield event
+        try:
+            async for event in service.chat_stream(messages):
+                if await request.is_disconnected():
+                    return
+                yield event
+        except Exception:
+            logger.exception("Error en el stream de chat")
+            yield 'event: error\ndata: {"message": "Error interno del servidor"}\n\n'
+            yield 'event: done\ndata: {"total_tokens": 0, "elapsed_ms": 0}\n\n'
 
     return StreamingResponse(
         event_generator(),
@@ -58,10 +68,11 @@ async def chat_health():
     """Health check del chat service."""
     try:
         service = get_chat_service()
+        await service.ensure_tools()
         return ChatHealthResponse(
             healthy=True,
             provider="openai",
-            model=service.client._custom_headers.get("model", "gpt-4o-mini"),
+            model=OPENAI_MODEL,
             mcp_tools_count=len(service.mcp_tools),
         )
     except ValueError as e:
@@ -87,6 +98,7 @@ async def list_tools():
     """Lista las herramientas MCP disponibles para el chat."""
     try:
         service = get_chat_service()
+        await service.ensure_tools()
         return {"tools": service.mcp_tools}
     except ValueError as e:
         raise HTTPException(503, str(e))
