@@ -35,7 +35,6 @@ export class ReferenceEngine {
   private readonly cache: LRUCache<string, ResolvedReference>;
   private readonly registry: ReferenceRegistry;
   private readonly parsers: ReferenceParser[];
-  private readonly mockLatencyMs: number;
   /** Promesas en vuelo — evita resoluciones duplicadas concurrentes */
   private readonly inflight = new Map<string, Promise<ResolvedReference>>();
 
@@ -47,7 +46,6 @@ export class ReferenceEngine {
       ? this.buildCustomRegistry(options.parsers, options.resolvers)
       : createDefaultRegistry();
     this.parsers = options.parsers ?? this.registry.getAllParsers();
-    this.mockLatencyMs = options.mockLatencyMs ?? 600;
   }
 
   // ─── Detección ────────────────────────────────────────────────
@@ -175,18 +173,8 @@ export class ReferenceEngine {
 
   private async executeResolution(ref: Reference): Promise<ResolvedReference> {
     const resolver = this.registry.getResolver(ref.type);
-
-    // Simular latencia de red (mock). En producción, el resolver
-    // hará fetch y la latencia será real; este delay desaparece.
-    await this.simulateLatency();
-
+    // El resolver hace fetch real al backend; la latencia es la de la red.
     return resolver.resolve(ref);
-  }
-
-  private async simulateLatency(): Promise<void> {
-    if (this.mockLatencyMs > 0) {
-      await new Promise((r) => setTimeout(r, this.mockLatencyMs));
-    }
   }
 
   private resolveOverlaps(refs: DetectedReference[]): DetectedReference[] {

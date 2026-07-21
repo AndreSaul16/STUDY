@@ -1,22 +1,22 @@
 import type { Reference, ReferenceResolver, ResolvedReference } from "@/types/reference";
 import { REFERENCE_TYPES, RESOLUTION_SOURCES } from "@/types/reference";
-import { MOCK_FOOTNOTE_DB, MOCK_FALLBACK } from "@/data/mockResolvers";
 
 /**
- * FootnoteResolver — resuelve notas del autor y notas al pie.
+ * FootnoteResolver — notas del autor y notas al pie.
+ *
+ * Aún no hay resolución real. En vez de contenido mock inventado, informa
+ * claramente de que no está disponible.
  */
 export class FootnoteResolver implements ReferenceResolver {
   readonly type = REFERENCE_TYPES.FOOTNOTE;
 
   async resolve(ref: Reference): Promise<ResolvedReference> {
-    const data = MOCK_FOOTNOTE_DB[ref.identifier] ?? MOCK_FALLBACK;
-
     return {
       reference: ref,
-      title: data.title,
-      body: data.body,
+      title: "Nota",
+      body: "Contenido no disponible sin conexión a la publicación.",
       resolvedAt: Date.now(),
-      source: RESOLUTION_SOURCES.MOCK,
+      source: RESOLUTION_SOURCES.UNAVAILABLE,
     };
   }
 }

@@ -93,6 +93,12 @@ export const RESOLUTION_SOURCES = {
   CACHE: "cache",
   MOCK: "mock",
   API: "api",
+  /** Texto obtenido de wol.jw.org en español (backend). */
+  WOL: "wol",
+  /** Texto obtenido del MCP (fallback, en inglés). */
+  MCP: "mcp",
+  /** No hay resolución real disponible (sin conexión a la publicación). */
+  UNAVAILABLE: "unavailable",
 } as const;
 
 export type ResolutionSource = (typeof RESOLUTION_SOURCES)[keyof typeof RESOLUTION_SOURCES];
