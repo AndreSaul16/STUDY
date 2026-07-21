@@ -90,7 +90,7 @@ export const jwpubClient = {
     documents: JWPUBDocument[];
     toc: JWPUBTOCItem[];
   }> {
-    const response = await fetch(`${API_BASE}/api/jwpub/${symbol}`);
+    const response = await fetch(`${API_BASE}/api/jwpub/${encodeURIComponent(symbol)}`);
     if (!response.ok) throw new Error(`Get failed: ${response.status}`);
     return response.json();
   },
@@ -100,7 +100,9 @@ export const jwpubClient = {
     publication: JWPUBPublication;
     document: JWPUBDocument;
   }> {
-    const response = await fetch(`${API_BASE}/api/jwpub/${symbol}/doc/${docId}`);
+    const response = await fetch(
+      `${API_BASE}/api/jwpub/${encodeURIComponent(symbol)}/doc/${docId}`,
+    );
     if (!response.ok) throw new Error(`Get document failed: ${response.status}`);
     return response.json();
   },

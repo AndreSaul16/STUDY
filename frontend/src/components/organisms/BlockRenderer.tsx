@@ -11,6 +11,19 @@ interface BlockRendererProps {
   annotations: Annotation[];
 }
 
+/**
+ * Valida que un src de imagen sea seguro: solo `data:image/...` o rutas
+ * relativas. Rechaza esquemas (http:, javascript:, etc.) y protocol-relative.
+ */
+function isSafeImageSrc(src: string): boolean {
+  const s = src.trim();
+  if (!s) return false;
+  if (s.toLowerCase().startsWith("data:image/")) return true;
+  if (s.startsWith("//")) return false; // protocol-relative
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return false; // cualquier esquema
+  return true; // ruta relativa
+}
+
 const MARK_BG: Record<HighlightColor, string> = {
   [HIGHLIGHT_COLORS.YELLOW]: "bg-mark-yellow/60",
   [HIGHLIGHT_COLORS.GREEN]: "bg-mark-green/60",
@@ -74,13 +87,16 @@ export function BlockRenderer({
     const match = block.content.match(/^!\[(.*?)\]\((.*?)\)$/);
     const alt = match?.[1] ?? "";
     const url = match?.[2] ?? "";
+    const safe = isSafeImageSrc(url);
     return (
       <figure data-block-id={block.blockId} className="my-6">
-        <img
-          src={url}
-          alt={alt}
-          className="w-full rounded-lg ring-1 ring-seam-light dark:ring-seam-dark"
-        />
+        {safe && (
+          <img
+            src={url}
+            alt={alt}
+            className="w-full rounded-lg ring-1 ring-seam-light dark:ring-seam-dark"
+          />
+        )}
         {alt && (
           <figcaption className="mt-2 text-center font-ui text-xs italic text-muted-light dark:text-muted-dark">
             {alt}
