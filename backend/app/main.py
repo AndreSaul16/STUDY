@@ -97,9 +97,16 @@ if (FRONTEND_DIST / "index.html").exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        """Serve frontend SPA — catch-all fallback to index.html."""
+        """Serve frontend SPA — static files first, then fallback to index.html."""
         if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi"):
             return {"detail": "Not Found"}
+
+        # Serve static files (wasm, favicon, etc.) directly from dist
+        file_path = FRONTEND_DIST / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+
+        # SPA fallback — serve index.html for client-side routing
         index = FRONTEND_DIST / "index.html"
         if index.exists():
             return FileResponse(index)
