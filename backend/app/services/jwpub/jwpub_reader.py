@@ -31,6 +31,7 @@ from typing import BinaryIO, Optional, Tuple, List, Dict, Any
 from Crypto.Cipher import AES
 
 MAX_JWPUB_SIZE = 200 * 1024 * 1024  # 200 MB
+MAX_DOC_HTML = 50 * 1024 * 1024  # 50 MB — límite por documento descomprimido
 XOR_CONSTANT = bytes.fromhex(
     "11cbb5587e32846d4c26790c633da289f66fe5842a3a585ce1bc3a294af5ada7"
 )
@@ -91,6 +92,7 @@ class JWPUBReader:
             raise JWPUBError("Not a valid ZIP file")
 
         self._validate_zip_paths(outer_zip)
+        self._check_zip_bomb(outer_zip)
 
         # 2. Leer manifest.json
         manifest = self._read_manifest(outer_zip)
@@ -99,6 +101,7 @@ class JWPUBReader:
         contents_data = self._read_contents(outer_zip)
         inner_zip = zipfile.ZipFile(io.BytesIO(contents_data), "r")
         self._validate_zip_paths(inner_zip)
+        self._check_zip_bomb(inner_zip)
 
         # 4. Extraer symbol.db
         db_name = manifest.get("publication", {}).get("fileName", "symbol.db")
@@ -129,6 +132,21 @@ class JWPUBReader:
             name = info.filename
             if name.startswith("/") or ".." in name:
                 raise JWPUBError(f"Path traversal detected: {name}")
+
+    def _check_zip_bomb(self, zf: zipfile.ZipFile) -> None:
+        """Rechaza ZIPs cuyo tamaño descomprimido declarado es excesivo."""
+        total = 0
+        for info in zf.infolist():
+            if info.file_size > MAX_JWPUB_SIZE:
+                raise JWPUBError(
+                    f"ZIP entry too large: {info.filename} "
+                    f"({info.file_size} bytes)"
+                )
+            total += info.file_size
+        if total > 4 * MAX_JWPUB_SIZE:
+            raise JWPUBError(
+                "ZIP uncompressed size too large (possible zip bomb)"
+            )
 
     def _read_manifest(self, zf: zipfile.ZipFile) -> Dict[str, Any]:
         """Lee manifest.json del ZIP externo."""
@@ -191,14 +209,19 @@ class JWPUBReader:
         cipher = AES.new(key, AES.MODE_CBC, iv)
         decrypted = cipher.decrypt(encrypted)
 
-        # Quitar padding PKCS7
+        # Quitar padding PKCS7 (validando que el padding sea consistente)
+        if not decrypted:
+            raise JWPUBError("Empty decrypted content")
         pad_len = decrypted[-1]
-        if pad_len <= 16:
+        if 1 <= pad_len <= 16 and decrypted[-pad_len:] == bytes([pad_len]) * pad_len:
             decrypted = decrypted[:-pad_len]
 
-        # Descomprimir zlib
+        # Descomprimir zlib con límite (protección zip-bomb por documento)
         try:
-            html_bytes = zlib.decompress(decrypted)
+            decompressor = zlib.decompressobj()
+            html_bytes = decompressor.decompress(decrypted, MAX_DOC_HTML)
+            if decompressor.unconsumed_tail:
+                raise JWPUBError("Decompressed document exceeds size limit")
         except zlib.error:
             # Si falla zlib, intentar sin descomprimir
             html_bytes = decrypted
