@@ -7,18 +7,27 @@ basado SOLO en contenido JW.
 
 Flujo:
   1. Usuario envía mensaje
-  2. LLM decide qué herramientas del MCP usar (function calling)
-  3. Backend ejecuta las herramientas via MCP bridge
-  4. LLM compone respuesta basada en los resultados
+  2. Llamada streaming al LLM CON tools, acumulando tool_calls de los deltas
+  3. Si el LLM pidió herramientas, se ejecutan via MCP bridge (en thread)
+  4. Segunda llamada streaming SIN tools con los resultados
   5. Stream SSE al frontend
+
+Diseño async: usa AsyncOpenAI para no bloquear el event loop. Las llamadas
+síncronas al MCP bridge se ejecutan con asyncio.to_thread.
 """
 
+import asyncio
 import json
+import logging
 import os
 import time
 from typing import AsyncGenerator, Dict, Any, Optional
-from openai import OpenAI
+
+from openai import AsyncOpenAI
+
 from .mcp_bridge import get_mcp_bridge
+
+logger = logging.getLogger(__name__)
 
 
 # Configuración OpenAI
@@ -56,30 +65,39 @@ class ChatService:
             raise ValueError(
                 "OPENAI_API_KEY no configurada. Añádela en backend/.env"
             )
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
         self.mcp_tools: list[Dict[str, Any]] = []
-        self._load_mcp_tools()
+        self._tools_loaded = False
 
-    def _load_mcp_tools(self) -> None:
-        """Carga las herramientas del MCP y las convierte a formato OpenAI."""
+    def _load_mcp_tools_sync(self) -> list[Dict[str, Any]]:
+        """Carga las herramientas del MCP y las convierte a formato OpenAI.
+
+        Síncrono (usa el bridge stdio); se invoca via asyncio.to_thread.
+        """
+        bridge = get_mcp_bridge()
+        tools = bridge.list_tools()
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("inputSchema", {}),
+                },
+            }
+            for tool in tools
+        ]
+
+    async def ensure_tools(self) -> None:
+        """Carga las herramientas MCP una sola vez (idempotente)."""
+        if self._tools_loaded:
+            return
         try:
-            bridge = get_mcp_bridge()
-            tools = bridge.list_tools()
-
-            # Convertir herramientas MCP a formato OpenAI function calling
+            self.mcp_tools = await asyncio.to_thread(self._load_mcp_tools_sync)
+        except Exception:
+            logger.exception("Error cargando MCP tools")
             self.mcp_tools = []
-            for tool in tools:
-                self.mcp_tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get("inputSchema", {}),
-                    },
-                })
-        except Exception as e:
-            print(f"[ChatService] Error cargando MCP tools: {e}")
-            self.mcp_tools = []
+        self._tools_loaded = True
 
     async def chat_stream(
         self, messages: list[Dict[str, str]]
@@ -91,114 +109,141 @@ class ChatService:
             messages: lista de mensajes {role, content}
 
         Yields:
-            Eventos SSE formateados (event: type\ndata: json\n\n)
+            Eventos SSE formateados (event: type\\ndata: json\\n\\n)
         """
         start_time = time.time()
+        await self.ensure_tools()
 
-        # Preparar mensajes con system prompt
-        full_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+        full_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + list(messages)
+        total_tokens = 0
 
-        # Primera llamada al LLM
+        # 1ª llamada streaming CON tools, acumulando tool_calls de los deltas.
         try:
-            response = self.client.chat.completions.create(
+            stream = await self.client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=full_messages,
-                tools=self.mcp_tools if self.mcp_tools else None,
+                tools=self.mcp_tools or None,
                 max_tokens=OPENAI_MAX_TOKENS,
-                stream=False,  # No streaming para function calling
+                stream=True,
+                stream_options={"include_usage": True},
             )
-        except Exception as e:
-            yield self._format_sse("error", {"message": str(e)})
+        except Exception:
+            logger.exception("OpenAI stream failed (primera llamada)")
+            yield self._format_sse(
+                "error", {"message": "Error al conectar con el proveedor de IA"}
+            )
             return
 
-        choice = response.choices[0]
-        message = choice.message
+        tool_calls: Dict[int, Dict[str, str]] = {}
+        try:
+            async for chunk in stream:
+                if getattr(chunk, "usage", None):
+                    total_tokens = chunk.usage.total_tokens
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    yield self._format_sse("token", {"text": delta.content})
+                for tc in (delta.tool_calls or []):
+                    acc = tool_calls.setdefault(
+                        tc.index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if tc.id:
+                        acc["id"] = tc.id
+                    if tc.function and tc.function.name:
+                        acc["name"] += tc.function.name
+                    if tc.function and tc.function.arguments:
+                        acc["arguments"] += tc.function.arguments
+        except Exception:
+            logger.exception("OpenAI stream failed (lectura de chunks)")
+            yield self._format_sse(
+                "error", {"message": "Error durante la generación de la respuesta"}
+            )
+            return
 
-        # Si el LLM quiere llamar herramientas
-        if message.tool_calls:
-            # Enviar metadata
-            yield self._format_sse("metadata", {
-                "tool_calls": len(message.tool_calls),
-                "model": OPENAI_MODEL,
+        # 2. Si hubo tool_calls, ejecutarlas y hacer segunda llamada streaming.
+        if tool_calls:
+            yield self._format_sse(
+                "metadata",
+                {"tool_calls": len(tool_calls), "model": OPENAI_MODEL},
+            )
+
+            # Construir el mensaje assistant con las tool_calls acumuladas.
+            assistant_tool_calls = []
+            for idx in sorted(tool_calls.keys()):
+                acc = tool_calls[idx]
+                assistant_tool_calls.append({
+                    "id": acc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": acc["name"],
+                        "arguments": acc["arguments"] or "{}",
+                    },
+                })
+            full_messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": assistant_tool_calls,
             })
 
-            # Ejecutar cada tool call
-            tool_results = []
-            for tool_call in message.tool_calls:
-                tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments)
+            # Ejecutar cada herramienta via MCP bridge (en thread).
+            for idx in sorted(tool_calls.keys()):
+                acc = tool_calls[idx]
+                tool_name = acc["name"]
+                try:
+                    tool_args = json.loads(acc["arguments"] or "{}")
+                except json.JSONDecodeError:
+                    tool_args = {}
 
-                yield self._format_sse("tool_call", {
-                    "name": tool_name,
-                    "arguments": tool_args,
-                })
+                yield self._format_sse(
+                    "tool_call", {"name": tool_name, "arguments": tool_args}
+                )
 
-                # Ejecutar herramienta via MCP
                 try:
                     bridge = get_mcp_bridge()
-                    result = bridge.call_tool(tool_name, tool_args)
-                    tool_results.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "content": json.dumps(result),
-                    })
-                except Exception as e:
-                    tool_results.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "content": json.dumps({"error": str(e)}),
-                    })
+                    result = await asyncio.to_thread(
+                        bridge.call_tool, tool_name, tool_args
+                    )
+                    content = json.dumps(result)
+                except Exception:
+                    logger.exception("Error ejecutando herramienta MCP %s", tool_name)
+                    content = json.dumps({"error": "tool execution failed"})
 
-            # Segunda llamada al LLM con resultados de herramientas
-            full_messages.append(message.model_dump())
-            full_messages.extend(tool_results)
+                full_messages.append({
+                    "role": "tool",
+                    "tool_call_id": acc["id"],
+                    "content": content,
+                })
 
+            # 2ª llamada streaming SIN tools.
             try:
-                response2 = self.client.chat.completions.create(
+                stream2 = await self.client.chat.completions.create(
                     model=OPENAI_MODEL,
                     messages=full_messages,
                     max_tokens=OPENAI_MAX_TOKENS,
                     stream=True,
+                    stream_options={"include_usage": True},
                 )
-            except Exception as e:
-                yield self._format_sse("error", {"message": str(e)})
-                return
-
-            # Stream de la respuesta final
-            full_content = ""
-            for chunk in response2:
-                if chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    full_content += token
-                    yield self._format_sse("token", {"text": token})
-
-        else:
-            # Respuesta directa sin tool calls — stream
-            # Rehacer con streaming
-            try:
-                response_stream = self.client.chat.completions.create(
-                    model=OPENAI_MODEL,
-                    messages=full_messages,
-                    tools=self.mcp_tools if self.mcp_tools else None,
-                    max_tokens=OPENAI_MAX_TOKENS,
-                    stream=True,
+                async for chunk in stream2:
+                    if getattr(chunk, "usage", None):
+                        total_tokens += chunk.usage.total_tokens
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        yield self._format_sse("token", {"text": delta.content})
+            except Exception:
+                logger.exception("OpenAI stream failed (segunda llamada)")
+                yield self._format_sse(
+                    "error",
+                    {"message": "Error al generar la respuesta final"},
                 )
-            except Exception as e:
-                yield self._format_sse("error", {"message": str(e)})
                 return
-
-            full_content = ""
-            for chunk in response_stream:
-                if chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    full_content += token
-                    yield self._format_sse("token", {"text": token})
 
         elapsed_ms = int((time.time() - start_time) * 1000)
-        yield self._format_sse("done", {
-            "total_tokens": response.usage.total_tokens if response.usage else 0,
-            "elapsed_ms": elapsed_ms,
-        })
+        yield self._format_sse(
+            "done", {"total_tokens": total_tokens, "elapsed_ms": elapsed_ms}
+        )
 
     def _format_sse(self, event: str, data: Dict[str, Any]) -> str:
         """Formatea un evento SSE."""
