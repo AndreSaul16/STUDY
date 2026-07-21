@@ -19,11 +19,13 @@ Seguridad:
 """
 
 import io
+import os
 import json
+import tempfile
 import zipfile
 import sqlite3
 from typing import BinaryIO, Optional, Tuple
-from ...schemas.interop_schemas import ImportResult, USERDATA_DB_SCHEMA
+from ...schemas.interop_schemas import ImportResult
 
 
 MAX_ZIP_SIZE = 100 * 1024 * 1024  # 100 MB
@@ -65,6 +67,9 @@ class JWLibraryReader:
         # 2. Validar nombres de archivos (path traversal protection)
         self._validate_zip_paths(zf)
 
+        # 2b. Protección zip-bomb: validar tamaño descomprimido declarado
+        self._check_zip_bomb(zf)
+
         # 3. Extraer userData.db
         db_bytes = self._extract_file(zf, USERDATA_DB_NAME)
         if db_bytes is None:
@@ -94,6 +99,21 @@ class JWLibraryReader:
             if name.startswith("/") or ".." in name.split("/"):
                 raise JWLibraryError(f"Unsafe path in ZIP: {name}")
 
+    def _check_zip_bomb(self, zf: zipfile.ZipFile) -> None:
+        """Rechaza ZIPs cuyo tamaño descomprimido declarado es excesivo."""
+        total = 0
+        for info in zf.infolist():
+            if info.file_size > MAX_ZIP_SIZE:
+                raise JWLibraryError(
+                    f"ZIP entry too large: {info.filename} "
+                    f"({info.file_size} bytes)"
+                )
+            total += info.file_size
+        if total > 4 * MAX_ZIP_SIZE:
+            raise JWLibraryError(
+                "ZIP uncompressed size too large (possible zip bomb)"
+            )
+
     def _extract_file(self, zf: zipfile.ZipFile, name: str) -> Optional[bytes]:
         """Extrae un archivo del ZIP de forma segura."""
         try:
@@ -103,71 +123,42 @@ class JWLibraryReader:
 
     def _read_user_data_db(self, db_bytes: bytes) -> ImportResult:
         """
-        Abre userData.db en memoria y lee las tablas relevantes.
+        Abre userData.db desde un archivo temporal y lee las tablas relevantes.
 
-        Usa sqlite3 stdlib con :memory: para no tocar disco.
+        sqlite3 stdlib no acepta bytes directamente, así que escribimos a un
+        archivo temporal que se borra siempre en el finally.
         Solo ejecuta SELECTs — nunca INSERT/UPDATE/DELETE.
         """
         errors: list[str] = []
-        marks_count = 0
-        notes_count = 0
-        tags_count = 0
-        bookmarks_count = 0
-        documents: list[int] = []
 
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         try:
-            conn = sqlite3.connect(":memory:")
-            conn.executescript(USERDATA_DB_SCHEMA)  # Crear tablas si no existen
-            # Cargar los datos del archivo
-            conn.executescript(
-                f"ATTACH DATABASE 'file::{db_bytes.hex()}?mode=ro' AS imported;"
-            )
-        except sqlite3.Error:
-            # Si ATTACH falla (formato hex no soportado), usar approach alternativo
+            tmp.write(db_bytes)
+            tmp.close()
+
+            conn = sqlite3.connect(tmp.name)
             try:
-                # Escribir a archivo temporal en memoria via deserializer
-                conn = sqlite3.connect(":memory:")
-                conn.executescript(USERDATA_DB_SCHEMA)
-                # Usar iterdump inverso no es práctico; usar approach con blob
-                conn.close()
-                # Approach: crear DB desde los bytes directamente
-                import tempfile, os
-                tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-                tmp.write(db_bytes)
-                tmp.close()
-                conn = sqlite3.connect(tmp.name)
-                # Ahora leer
-                result = self._query_tables(conn, errors)
-                marks_count, notes_count, tags_count, bookmarks_count, documents = result
-                conn.close()
-                os.unlink(tmp.name)
-                return ImportResult(
-                    success=len(errors) == 0,
-                    user_marks_count=marks_count,
-                    notes_count=notes_count,
-                    tags_count=tags_count,
-                    bookmarks_count=bookmarks_count,
-                    documents=documents,
-                    errors=errors,
+                marks, notes, tags, bookmarks, documents = self._query_tables(
+                    conn, errors
                 )
-            except Exception as e:
-                errors.append(f"Failed to read userData.db: {e}")
-                return ImportResult(success=False, errors=errors)
+            finally:
+                conn.close()
 
-        # Leer tablas
-        result = self._query_tables(conn, errors)
-        marks_count, notes_count, tags_count, bookmarks_count, documents = result
-        conn.close()
-
-        return ImportResult(
-            success=len(errors) == 0,
-            user_marks_count=marks_count,
-            notes_count=notes_count,
-            tags_count=tags_count,
-            bookmarks_count=bookmarks_count,
-            documents=documents,
-            errors=errors,
-        )
+            return ImportResult(
+                success=len(errors) == 0,
+                user_marks_count=marks,
+                notes_count=notes,
+                tags_count=tags,
+                bookmarks_count=bookmarks,
+                documents=documents,
+                errors=errors,
+            )
+        except Exception as e:
+            errors.append(f"Failed to read userData.db: {e}")
+            return ImportResult(success=False, errors=errors)
+        finally:
+            if os.path.exists(tmp.name):
+                os.unlink(tmp.name)
 
     def _query_tables(
         self, conn: sqlite3.Connection, errors: list[str]

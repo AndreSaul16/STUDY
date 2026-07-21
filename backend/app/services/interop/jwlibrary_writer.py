@@ -25,7 +25,7 @@ import os
 from typing import Optional, Tuple
 from ...schemas.interop_schemas import ExportRequest, ExportResult
 from .schema_mapper import SchemaMapper
-from .jwlibrary_reader import JWLibraryError
+from .jwlibrary_reader import JWLibraryError, MAX_ZIP_SIZE
 
 
 class JWLibraryWriter:
@@ -151,6 +151,21 @@ class JWLibraryWriter:
             # Leer ZIP original
             original_zf = zipfile.ZipFile(io.BytesIO(original_zip_bytes), mode="r")
             original_items = original_zf.infolist()
+
+            # Protección zip-bomb al re-empaquetar: validar tamaños declarados
+            total = 0
+            for item in original_items:
+                if item.filename == "userData.db":
+                    continue
+                if item.file_size > MAX_ZIP_SIZE:
+                    errors.append(
+                        f"ZIP entry too large: {item.filename}"
+                    )
+                    return None, errors
+                total += item.file_size
+            if total > 4 * MAX_ZIP_SIZE:
+                errors.append("ZIP uncompressed size too large (possible zip bomb)")
+                return None, errors
 
             # Crear nuevo ZIP
             output = io.BytesIO()
