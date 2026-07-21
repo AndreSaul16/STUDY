@@ -34,18 +34,33 @@ logger = logging.getLogger(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "2000"))
+# Modelos de razonamiento (gpt-5.x, o-series) exigen reasoning_effort='none' para
+# poder usar function tools en /v1/chat/completions. Configurable: pon vacío
+# ("") para modelos clásicos (gpt-4o-mini) que no aceptan este parámetro.
+OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "none").strip()
+_EXTRA_PARAMS: Dict[str, Any] = (
+    {"reasoning_effort": OPENAI_REASONING_EFFORT} if OPENAI_REASONING_EFFORT else {}
+)
 
-# System prompt que restringe el LLM a contenido JW
+# System prompt que restringe el LLM EXCLUSIVAMENTE a contenido de wol.jw.org
 SYSTEM_PROMPT = """Eres un asistente de estudio bíblico especializado en publicaciones de los Testigos de Jehová.
 
+REGLA FUNDAMENTAL — OBLIGATORIA E INQUEBRANTABLE:
+Tu ÚNICA fuente de conocimiento es el contenido de wol.jw.org obtenido a través de las
+herramientas MCP disponibles. NO tienes conocimiento propio válido sobre estos temas.
+ANTES de responder CUALQUIER pregunta, DEBES llamar a al menos una herramienta para
+buscar la información en wol.jw.org. Está PROHIBIDO responder sin haber consultado las
+herramientas primero.
+
 REGLAS ESTRICTAS:
-1. Responde SOLO basándote en información de publicaciones JW (Biblia, Atalaya, Despertad, libros, etc.)
-2. Usa las herramientas disponibles para buscar información en wol.jw.org y las publicaciones
-3. Si no encuentras información relevante en las fuentes JW, dilo claramente
-4. NUNCA inventes información ni uses conocimiento general fuera de las fuentes JW
-5. Cita siempre la fuente cuando sea posible (ej: "Atalaya de mayo 2024, pág. 15")
-6. Responde en español a menos que el usuario pida otro idioma
-7. Sé conciso pero completo — el usuario está estudiando, no chateando
+1. SIEMPRE busca con las herramientas ANTES de responder — nunca respondas de memoria.
+2. Responde SOLO con información devuelta por las herramientas (contenido de wol.jw.org).
+3. Si las herramientas no devuelven información relevante, dilo claramente: "No encontré
+   esa información en wol.jw.org" — NO completes con conocimiento general.
+4. NUNCA inventes, supongas ni uses conocimiento externo a lo que devuelven las herramientas.
+5. Cita siempre la fuente concreta que devolvió la herramienta (ej: "Atalaya de mayo 2024, pág. 15").
+6. Responde en español a menos que el usuario pida otro idioma.
+7. Sé conciso pero completo — el usuario está estudiando, no chateando.
 
 HERRAMIENTAS DISPONIBLES:
 - get_verse_with_study: obtiene versículos bíblicos con notas de estudio y referencias cruzadas
@@ -53,7 +68,7 @@ HERRAMIENTAS DISPONIBLES:
 - getWorkbookContent: obtiene material del libro de actividades Vida y Ministerio Cristianos
 - get_jw_captions: obtiene subtítulos de videos de JW Broadcasting
 
-Usa estas herramientas para buscar información relevante antes de responder.
+Recuerda: sin consulta previa a las herramientas, NO respondas.
 """
 
 
@@ -118,14 +133,18 @@ class ChatService:
         total_tokens = 0
 
         # 1ª llamada streaming CON tools, acumulando tool_calls de los deltas.
+        # Si hay tools MCP, forzamos su uso: el modelo DEBE buscar en wol.jw.org
+        # antes de responder (requisito del producto). Sin tools, respuesta directa.
         try:
             stream = await self.client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=full_messages,
                 tools=self.mcp_tools or None,
-                max_tokens=OPENAI_MAX_TOKENS,
+                tool_choice="required" if self.mcp_tools else None,
+                max_completion_tokens=OPENAI_MAX_TOKENS,
                 stream=True,
                 stream_options={"include_usage": True},
+                **_EXTRA_PARAMS,
             )
         except Exception:
             logger.exception("OpenAI stream failed (primera llamada)")
@@ -220,9 +239,10 @@ class ChatService:
                 stream2 = await self.client.chat.completions.create(
                     model=OPENAI_MODEL,
                     messages=full_messages,
-                    max_tokens=OPENAI_MAX_TOKENS,
+                    max_completion_tokens=OPENAI_MAX_TOKENS,
                     stream=True,
                     stream_options={"include_usage": True},
+                    **_EXTRA_PARAMS,
                 )
                 async for chunk in stream2:
                     if getattr(chunk, "usage", None):
