@@ -10,17 +10,43 @@ Expone:
 El MCPContentService existente se integra en fases posteriores.
 """
 
+import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Cargar backend/.env ANTES de importar routers: chat_service lee OPENAI_*
+# como constantes a nivel de módulo en import time.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+logging.basicConfig(level=logging.INFO)
+
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers.ai_router import router as ai_router
 from .routers.interop_router import router as interop_router
 from .routers.jwpub_router import router as jwpub_router
 from .routers.chat_router import router as chat_router
+from .services.ai.mcp_bridge import shutdown_mcp_bridge
+
+APP_VERSION = "0.3.0"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # No inicializamos el MCP bridge en startup: se crea perezosamente.
+    yield
+    # Cerrar el subprocess del MCP bridge al apagar la app.
+    shutdown_mcp_bridge()
+
 
 app = FastAPI(
     title="Study Backend",
     description="Backend para la app de estudio con IA desacoplada, MCP e interoperabilidad .jwlibrary.",
-    version="0.3.0",
+    version=APP_VERSION,
+    lifespan=lifespan,
 )
 
 # CORS — permitir el frontend de Vite en desarrollo
@@ -49,7 +75,7 @@ app.include_router(chat_router)
 async def root():
     return {
         "name": "Study Backend",
-        "version": "0.2.0",
+        "version": APP_VERSION,
         "docs": "/docs",
         "ai_health": "/api/ai/health",
     }

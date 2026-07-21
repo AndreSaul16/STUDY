@@ -7,23 +7,28 @@ al chat service para que el LLM pueda llamarlas.
 """
 
 import json
+import logging
+import os
 import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 from queue import Queue, Empty
 
+logger = logging.getLogger(__name__)
+
 
 class MCPBridge:
     """Puente para comunicarse con jw-mcp via stdio."""
 
-    def __init__(self, jw_mcp_path: str = "jw-mcp"):
-        self.jw_mcp_path = jw_mcp_path
+    def __init__(self, jw_mcp_path: Optional[str] = None):
+        self.jw_mcp_path = jw_mcp_path or os.getenv("JW_MCP_PATH", "jw-mcp")
         self.process: Optional[subprocess.Popen] = None
         self.request_id = 0
         self.responses: Dict[int, Queue] = {}
         self.lock = threading.Lock()
         self.reader_thread: Optional[threading.Thread] = None
+        self.stderr_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         """Inicia el subprocess jw-mcp."""
@@ -43,11 +48,31 @@ class MCPBridge:
         self.reader_thread = threading.Thread(target=self._read_responses, daemon=True)
         self.reader_thread.start()
 
+        # Drenar stderr para evitar bloqueo del subprocess si llena el buffer
+        self.stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self.stderr_thread.start()
+
+    def _drain_stderr(self) -> None:
+        """Lee y loguea stderr del subprocess para que no bloquee su buffer."""
+        if self.process is None or self.process.stderr is None:
+            return
+        for line in self.process.stderr:
+            line = line.rstrip()
+            if line:
+                logger.debug("[jw-mcp stderr] %s", line)
+
     def stop(self) -> None:
-        """Detiene el subprocess jw-mcp."""
-        if self.process is not None:
+        """Detiene el subprocess jw-mcp, con kill si no termina a tiempo."""
+        if self.process is None:
+            return
+        try:
             self.process.terminate()
-            self.process.wait(timeout=5)
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+        finally:
             self.process = None
 
     def _read_responses(self) -> None:
@@ -89,11 +114,11 @@ class MCPBridge:
     def _wait_response(self, request_id: int, timeout: float = 30.0) -> Dict[str, Any]:
         """Espera una respuesta del MCP server."""
         try:
-            response = self.responses[request_id].get(timeout=timeout)
-            del self.responses[request_id]
-            return response
+            return self.responses[request_id].get(timeout=timeout)
         except Empty:
             raise TimeoutError(f"MCP request {request_id} timed out")
+        finally:
+            self.responses.pop(request_id, None)
 
     def initialize(self) -> Dict[str, Any]:
         """Inicializa la conexión MCP."""
@@ -129,9 +154,28 @@ _bridge: Optional[MCPBridge] = None
 
 
 def get_mcp_bridge() -> MCPBridge:
-    """Obtiene el singleton del MCP bridge."""
+    """Obtiene el singleton del MCP bridge.
+
+    Solo asigna el singleton tras un initialize() exitoso; si falla,
+    detiene el bridge y propaga el error para permitir reintentos.
+    """
     global _bridge
     if _bridge is None:
-        _bridge = MCPBridge()
-        _bridge.initialize()
+        bridge = MCPBridge()
+        try:
+            bridge.initialize()
+        except Exception:
+            bridge.stop()
+            raise
+        _bridge = bridge
     return _bridge
+
+
+def shutdown_mcp_bridge() -> None:
+    """Detiene el singleton del MCP bridge (para shutdown de la app)."""
+    global _bridge
+    if _bridge is not None:
+        try:
+            _bridge.stop()
+        finally:
+            _bridge = None

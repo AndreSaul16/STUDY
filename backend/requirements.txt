@@ -7,3 +7,4 @@ mcp
 httpx
 pycryptodome
 openai
+python-dotenv
