@@ -121,6 +121,15 @@ interface ScriptureMatch {
   raw: string;
 }
 
+// Separadores de espacio Unicode que deben tratarse como espacio normal.
+// Incluye NBSP (U+00A0), narrow NBSP (U+202F), thin space (U+2009), etc.
+// Se sustituyen por U+0020 con longitud 1:1 → los offsets start/end no cambian.
+const UNICODE_SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]/g;
+
+function normalizeSpaces(text: string): string {
+  return text.replace(UNICODE_SPACES, " ");
+}
+
 function extractMatches(text: string): ScriptureMatch[] {
   const matches: ScriptureMatch[] = [];
   const regex = new RegExp(SCRIPTURE_REGEX.source, "giu");
@@ -174,7 +183,11 @@ export class ScriptureParser implements ReferenceParser {
   readonly type = REFERENCE_TYPES.SCRIPTURE;
 
   parse(text: string): DetectedReference[] {
-    const matches = extractMatches(text);
+    // Normaliza espacios Unicode (NBSP, narrow NBSP, thin space…) a U+0020
+    // ANTES de parsear: las entradas multi-palabra de BOOKS ("2 Corintios")
+    // usan espacio normal, y wol.jw.org intercala espacios no separables.
+    // La sustitución es 1:1 en longitud → los offsets start/end siguen válidos.
+    const matches = extractMatches(normalizeSpaces(text));
     return matches.map((m) => {
       const reference: Reference = {
         type: REFERENCE_TYPES.SCRIPTURE,
