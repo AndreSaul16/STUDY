@@ -20,8 +20,10 @@ Seguridad:
 """
 
 import io
+import os
 import json
 import hashlib
+import tempfile
 import zipfile
 import sqlite3
 import zlib
@@ -214,9 +216,7 @@ class JWPUBReader:
             documents: lista de {DocumentId, Title, Content, ContentLength}
             toc: lista de {Id, ParentId, Title, DocumentId}
         """
-        conn = sqlite3.connect(io.BytesIO(db_bytes).__bytes__().__class__ and f":memory:")
         # sqlite3 no acepta bytes directamente, usar temp file
-        import tempfile, os
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.write(db_bytes)
         tmp.close()

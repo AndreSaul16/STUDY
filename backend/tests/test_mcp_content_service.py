@@ -1,13 +1,13 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch
-from backend.app.services.mcp_content_service import (
+from app.services.mcp_content_service import (
     MCPContentService,
     MCPConnectionError,
     MCPTimeoutError,
     ContentNotFoundError
 )
-from backend.app.schemas.domain_schemas import Article, PublicationBlock
+from app.schemas.domain_schemas import Article, PublicationBlock
 
 
 @pytest.fixture
