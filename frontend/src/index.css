@@ -1,0 +1,241 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (Tailwind 4 custom variant) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ─── Design Tokens: "Escritorio de Lectura" ─── */
+@theme {
+  /* Light: warm paper */
+  --color-paper-50: #fdfbf7;
+  --color-paper-100: #faf8f3;
+  --color-paper-200: #f5f1e8;
+  --color-paper-300: #ebe5d6;
+  --color-paper-400: #d9d0bd;
+
+  /* Dark: deep ink with warm tint */
+  --color-ink-50: #2a2724;
+  --color-ink-100: #1f1d1a;
+  --color-ink-200: #1a1816;
+  --color-ink-300: #15130f;
+  --color-ink-400: #100e0b;
+
+  /* Accent: burnt amber — reading lamp, bookmarks */
+  --color-amber-50: #fef3c7;
+  --color-amber-300: #fcd34d;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #d97706;
+  --color-amber-700: #b45309;
+  --color-amber-800: #92400e;
+
+  /* Highlight colors — marker swatches */
+  --color-mark-yellow: #fde68a;
+  --color-mark-green: #bbf7d0;
+  --color-mark-blue: #bfdbfe;
+  --color-mark-pink: #fbcfe8;
+  --color-mark-orange: #fed7aa;
+
+  /* Semantic text */
+  --color-reading-light: #2d2a26;
+  --color-reading-dark: #e8e4dc;
+  --color-muted-light: #6b665e;
+  --color-muted-dark: #9b958a;
+
+  /* Borders / seams */
+  --color-seam-light: #e2dccd;
+  --color-seam-dark: #2f2c28;
+
+  /* Fonts */
+  --font-display: "Instrument Serif", Georgia, serif;
+  --font-reading: "Newsreader", Georgia, serif;
+  --font-ui: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+
+  /* Shadows — hard, editorial, not floaty */
+  --shadow-press: 0 1px 0 0 rgba(0, 0, 0, 0.08);
+  --shadow-lift: 0 8px 24px -8px rgba(0, 0, 0, 0.25);
+
+  /* Easing */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out-quart: cubic-bezier(0.76, 0, 0.24, 1);
+}
+
+/* ─── Base ─── */
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-ui);
+    background-color: var(--color-paper-100);
+    color: var(--color-reading-light);
+    transition: background-color 0.4s var(--ease-out-expo),
+      color 0.4s var(--ease-out-expo);
+  }
+
+  .dark body {
+    background-color: var(--color-ink-200);
+    color: var(--color-reading-dark);
+  }
+
+  /* Selection — amber tint */
+  ::selection {
+    background-color: var(--color-amber-300);
+    color: var(--color-ink-200);
+  }
+  .dark ::selection {
+    background-color: var(--color-amber-600);
+    color: var(--color-ink-200);
+  }
+
+  /* Scrollbar — subtle, editorial */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-seam-light);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: var(--color-seam-dark);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-amber-600);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+  }
+}
+
+/* ─── Animations ─── */
+@layer utilities {
+  @keyframes marker-sweep {
+    from {
+      background-size: 0% 100%;
+      background-position: left center;
+    }
+    to {
+      background-size: 100% 100%;
+      background-position: left center;
+    }
+  }
+
+  @keyframes context-pop {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.92);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes sheet-up {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes scan-shimmer {
+    from {
+      background-position: -200% 0;
+    }
+    to {
+      background-position: 200% 0;
+    }
+  }
+
+  @keyframes fade-rise {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-context-pop {
+    animation: context-pop 0.22s var(--ease-out-expo) both;
+  }
+  .animate-sheet-up {
+    animation: sheet-up 0.32s var(--ease-out-expo) both;
+  }
+  .animate-fade-rise {
+    animation: fade-rise 0.5s var(--ease-out-expo) both;
+  }
+
+  /* Skeleton shimmer — paper scan effect */
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--color-seam-light) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: scan-shimmer 1.6s var(--ease-in-out-quart) infinite;
+  }
+  .dark .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--color-seam-dark) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: scan-shimmer 1.6s var(--ease-in-out-quart) infinite;
+  }
+
+  /* Highlight marker — sweep animation */
+  .mark-sweep {
+    background-image: linear-gradient(
+      to right,
+      var(--mark-color, var(--color-mark-yellow)),
+      var(--mark-color, var(--color-mark-yellow))
+    );
+    background-repeat: no-repeat;
+    background-size: 100% 45%;
+    background-position: 0 88%;
+    animation: marker-sweep 0.4s var(--ease-out-expo) both;
+  }
+}
+
+/* ─── Reading typography ─── */
+@layer components {
+  .prose-reading {
+    font-family: var(--font-reading);
+    font-optical-sizing: auto;
+    line-height: 1.75;
+    font-weight: 380;
+    letter-spacing: -0.003em;
+  }
+
+  .prose-reading p {
+    margin-bottom: 1.25em;
+  }
+
+  .prose-reading p:first-of-type {
+    text-indent: 0;
+  }
+
+  .prose-reading p + p {
+    text-indent: 1.5em;
+    margin-top: -0.5em;
+  }
+}
