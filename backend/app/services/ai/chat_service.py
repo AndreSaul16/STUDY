@@ -7,10 +7,13 @@ basado SOLO en contenido JW.
 
 Flujo:
   1. Usuario envía mensaje
-  2. Llamada streaming al LLM CON tools, acumulando tool_calls de los deltas
-  3. Si el LLM pidió herramientas, se ejecutan via MCP bridge (en thread)
-  4. Segunda llamada streaming SIN tools con los resultados
-  5. Stream SSE al frontend
+  2. BUCLE multi-ronda de tool-calling (hasta MAX_TOOL_ROUNDS): el LLM pide
+     herramientas, se ejecutan via MCP bridge (en thread) y se le devuelven
+     los resultados. Repite mientras el modelo siga pidiendo herramientas
+     (para buscar en varias fuentes: versículos, Atalaya, guía, videos)
+  3. Cuando deja de pedir herramientas (o se alcanza el tope), ronda final
+     de respuesta en streaming SIN tools
+  4. Stream SSE al frontend
 
 Diseño async: usa AsyncOpenAI para no bloquear el event loop. Las llamadas
 síncronas al MCP bridge se ejecutan con asyncio.to_thread.
@@ -52,6 +55,22 @@ ANTES de responder CUALQUIER pregunta, DEBES llamar a al menos una herramienta p
 buscar la información en wol.jw.org. Está PROHIBIDO responder sin haber consultado las
 herramientas primero.
 
+BUSCA EN VARIAS FUENTES (MUY IMPORTANTE):
+No te limites a UNA sola herramienta ni a UNA sola búsqueda. Para dar una respuesta
+completa DEBES consultar MÚLTIPLES fuentes relevantes y COMBINAR la información:
+- Versículos bíblicos con sus notas de estudio (get_verse_with_study).
+- Artículos de La Atalaya (getWatchtowerContent).
+- La guía de actividades / Vida y Ministerio Cristianos (getWorkbookContent).
+- Videos de JW Broadcasting cuando apliquen (get_jw_captions).
+Puedes pedir herramientas en VARIAS RONDAS: primero busca, y si necesitas más
+contexto de otra fuente, vuelve a pedir herramientas antes de responder. Solo redacta
+la respuesta final cuando hayas reunido información suficiente de las fuentes relevantes.
+
+IDIOMA — TRADUCE AL ESPAÑOL:
+El MCP responde en INGLÉS (los nombres de libros bíblicos y el contenido vienen en
+inglés). DEBES TRADUCIR ese contenido al español de forma natural y responder SIEMPRE
+en español (salvo que el usuario pida otro idioma), citando la fuente original.
+
 REGLAS ESTRICTAS:
 1. SIEMPRE busca con las herramientas ANTES de responder — nunca respondas de memoria.
 2. Responde SOLO con información devuelta por las herramientas (contenido de wol.jw.org).
@@ -59,8 +78,9 @@ REGLAS ESTRICTAS:
    esa información en wol.jw.org" — NO completes con conocimiento general.
 4. NUNCA inventes, supongas ni uses conocimiento externo a lo que devuelven las herramientas.
 5. Cita siempre la fuente concreta que devolvió la herramienta (ej: "Atalaya de mayo 2024, pág. 15").
-6. Responde en español a menos que el usuario pida otro idioma.
+6. Responde en español (traduciendo del inglés del MCP) a menos que el usuario pida otro idioma.
 7. Sé conciso pero completo — el usuario está estudiando, no chateando.
+8. Usa formato Markdown (encabezados, listas, negritas) para estructurar la respuesta.
 
 HERRAMIENTAS DISPONIBLES:
 - get_verse_with_study: obtiene versículos bíblicos con notas de estudio y referencias cruzadas
@@ -70,6 +90,9 @@ HERRAMIENTAS DISPONIBLES:
 
 Recuerda: sin consulta previa a las herramientas, NO respondas.
 """
+
+# Nº máximo de rondas de tool-calling antes de forzar la respuesta final.
+MAX_TOOL_ROUNDS = 4
 
 
 class ChatService:
@@ -131,134 +154,128 @@ class ChatService:
 
         full_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + list(messages)
         total_tokens = 0
+        total_tool_calls = 0
 
-        # 1ª llamada streaming CON tools, acumulando tool_calls de los deltas.
-        # Si hay tools MCP, forzamos su uso: el modelo DEBE buscar en wol.jw.org
-        # antes de responder (requisito del producto). Sin tools, respuesta directa.
+        # ─── BUCLE MULTI-RONDA de tool-calling ────────────────────────
+        # El modelo puede pedir herramientas en varias rondas para buscar en
+        # múltiples fuentes (versículos, Atalaya, guía, videos). Cada ronda es
+        # NO-streaming: solo recogemos las tool_calls, las ejecutamos y le
+        # devolvemos los resultados. Cuando deja de pedir herramientas (o se
+        # alcanza MAX_TOOL_ROUNDS) salimos y hacemos la respuesta final en
+        # streaming SIN tools (para forzar que responda).
+        if self.mcp_tools:
+            for round_idx in range(MAX_TOOL_ROUNDS):
+                # 1ª ronda: forzamos tool use. Rondas siguientes: "auto"
+                # (el modelo decide si necesita más fuentes o ya puede responder).
+                tool_choice = "required" if round_idx == 0 else "auto"
+                try:
+                    response = await self.client.chat.completions.create(
+                        model=OPENAI_MODEL,
+                        messages=full_messages,
+                        tools=self.mcp_tools,
+                        tool_choice=tool_choice,
+                        max_completion_tokens=OPENAI_MAX_TOKENS,
+                        **_EXTRA_PARAMS,
+                    )
+                except Exception:
+                    logger.exception(
+                        "OpenAI call failed (ronda de tools %s)", round_idx
+                    )
+                    yield self._format_sse(
+                        "error",
+                        {"message": "Error al conectar con el proveedor de IA"},
+                    )
+                    return
+
+                if getattr(response, "usage", None):
+                    total_tokens += response.usage.total_tokens
+
+                message = response.choices[0].message
+                raw_tool_calls = message.tool_calls or []
+
+                # El modelo dejó de pedir herramientas → listo para responder.
+                if not raw_tool_calls:
+                    break
+
+                # Añadir el mensaje assistant con las tool_calls solicitadas.
+                assistant_tool_calls = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments or "{}",
+                        },
+                    }
+                    for tc in raw_tool_calls
+                ]
+                full_messages.append({
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": assistant_tool_calls,
+                })
+
+                # Ejecutar cada herramienta via MCP bridge (en thread) y emitir
+                # un evento SSE tool_call por cada una.
+                for tc in raw_tool_calls:
+                    tool_name = tc.function.name
+                    try:
+                        tool_args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                    total_tool_calls += 1
+                    yield self._format_sse(
+                        "tool_call", {"name": tool_name, "arguments": tool_args}
+                    )
+
+                    try:
+                        bridge = get_mcp_bridge()
+                        result = await asyncio.to_thread(
+                            bridge.call_tool, tool_name, tool_args
+                        )
+                        content = json.dumps(result)
+                    except Exception:
+                        logger.exception(
+                            "Error ejecutando herramienta MCP %s", tool_name
+                        )
+                        content = json.dumps({"error": "tool execution failed"})
+
+                    full_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": content,
+                    })
+
+            yield self._format_sse(
+                "metadata",
+                {"tool_calls": total_tool_calls, "model": OPENAI_MODEL},
+            )
+
+        # ─── Ronda final: respuesta en streaming SIN tools ────────────
         try:
-            stream = await self.client.chat.completions.create(
+            final_stream = await self.client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=full_messages,
-                tools=self.mcp_tools or None,
-                tool_choice="required" if self.mcp_tools else None,
                 max_completion_tokens=OPENAI_MAX_TOKENS,
                 stream=True,
                 stream_options={"include_usage": True},
                 **_EXTRA_PARAMS,
             )
-        except Exception:
-            logger.exception("OpenAI stream failed (primera llamada)")
-            yield self._format_sse(
-                "error", {"message": "Error al conectar con el proveedor de IA"}
-            )
-            return
-
-        tool_calls: Dict[int, Dict[str, str]] = {}
-        try:
-            async for chunk in stream:
+            async for chunk in final_stream:
                 if getattr(chunk, "usage", None):
-                    total_tokens = chunk.usage.total_tokens
+                    total_tokens += chunk.usage.total_tokens
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
                 if delta.content:
                     yield self._format_sse("token", {"text": delta.content})
-                for tc in (delta.tool_calls or []):
-                    acc = tool_calls.setdefault(
-                        tc.index, {"id": "", "name": "", "arguments": ""}
-                    )
-                    if tc.id:
-                        acc["id"] = tc.id
-                    if tc.function and tc.function.name:
-                        acc["name"] += tc.function.name
-                    if tc.function and tc.function.arguments:
-                        acc["arguments"] += tc.function.arguments
         except Exception:
-            logger.exception("OpenAI stream failed (lectura de chunks)")
+            logger.exception("OpenAI stream failed (respuesta final)")
             yield self._format_sse(
-                "error", {"message": "Error durante la generación de la respuesta"}
+                "error", {"message": "Error al generar la respuesta final"}
             )
             return
-
-        # 2. Si hubo tool_calls, ejecutarlas y hacer segunda llamada streaming.
-        if tool_calls:
-            yield self._format_sse(
-                "metadata",
-                {"tool_calls": len(tool_calls), "model": OPENAI_MODEL},
-            )
-
-            # Construir el mensaje assistant con las tool_calls acumuladas.
-            assistant_tool_calls = []
-            for idx in sorted(tool_calls.keys()):
-                acc = tool_calls[idx]
-                assistant_tool_calls.append({
-                    "id": acc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": acc["name"],
-                        "arguments": acc["arguments"] or "{}",
-                    },
-                })
-            full_messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": assistant_tool_calls,
-            })
-
-            # Ejecutar cada herramienta via MCP bridge (en thread).
-            for idx in sorted(tool_calls.keys()):
-                acc = tool_calls[idx]
-                tool_name = acc["name"]
-                try:
-                    tool_args = json.loads(acc["arguments"] or "{}")
-                except json.JSONDecodeError:
-                    tool_args = {}
-
-                yield self._format_sse(
-                    "tool_call", {"name": tool_name, "arguments": tool_args}
-                )
-
-                try:
-                    bridge = get_mcp_bridge()
-                    result = await asyncio.to_thread(
-                        bridge.call_tool, tool_name, tool_args
-                    )
-                    content = json.dumps(result)
-                except Exception:
-                    logger.exception("Error ejecutando herramienta MCP %s", tool_name)
-                    content = json.dumps({"error": "tool execution failed"})
-
-                full_messages.append({
-                    "role": "tool",
-                    "tool_call_id": acc["id"],
-                    "content": content,
-                })
-
-            # 2ª llamada streaming SIN tools.
-            try:
-                stream2 = await self.client.chat.completions.create(
-                    model=OPENAI_MODEL,
-                    messages=full_messages,
-                    max_completion_tokens=OPENAI_MAX_TOKENS,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                    **_EXTRA_PARAMS,
-                )
-                async for chunk in stream2:
-                    if getattr(chunk, "usage", None):
-                        total_tokens += chunk.usage.total_tokens
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        yield self._format_sse("token", {"text": delta.content})
-            except Exception:
-                logger.exception("OpenAI stream failed (segunda llamada)")
-                yield self._format_sse(
-                    "error",
-                    {"message": "Error al generar la respuesta final"},
-                )
-                return
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         yield self._format_sse(
