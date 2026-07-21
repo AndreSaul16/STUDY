@@ -10,21 +10,37 @@ Los archivos se suben como multipart/form-data.
 Las respuestas de export son StreamingResponse con el ZIP.
 """
 
-import json
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
 import io
+import json
+import logging
+
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi.responses import StreamingResponse
 
 from ..schemas.interop_schemas import ExportRequest, ImportResult, ExportResult
-from ..schemas.import_full_schemas import ImportFullResult as ImportFullResultSchema
 from ..services.interop import JWLibraryReader, JWLibraryWriter, JWLibraryError
-from ..services.interop.jwlibrary_importer import JWLibraryImporter
+from ..upload_utils import read_upload_limited
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/interop", tags=["interop"])
+
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
 # Singletons
 _reader = JWLibraryReader()
 _writer = JWLibraryWriter()
+
+
+def _export_result_header(result: ExportResult) -> str:
+    """Serializa el ExportResult para el header HTTP X-Export-Result.
+
+    Los headers HTTP solo admiten ASCII; excluimos `errors` (texto libre,
+    puede contener no-ASCII) y forzamos ensure_ascii.
+    """
+    payload = result.model_dump()
+    payload.pop("errors", None)
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
 @router.post("/import", response_model=ImportResult)
@@ -39,7 +55,7 @@ async def import_jwlibrary(file: UploadFile = File(...)):
     if not file.filename or not file.filename.endswith(".jwlibrary"):
         raise HTTPException(400, "File must have .jwlibrary extension")
 
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(file, MAX_UPLOAD_SIZE)
     if not file_bytes:
         raise HTTPException(400, "Empty file")
 
@@ -48,8 +64,11 @@ async def import_jwlibrary(file: UploadFile = File(...)):
         return result
     except JWLibraryError as e:
         raise HTTPException(422, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"Import failed: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Import failed")
+        raise HTTPException(500, "Import failed")
 
 
 @router.post("/export")
@@ -73,7 +92,7 @@ async def export_jwlibrary(
     except Exception as e:
         raise HTTPException(400, f"Invalid request JSON: {e}")
 
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(file, MAX_UPLOAD_SIZE)
     if not file_bytes:
         raise HTTPException(400, "Empty file")
 
@@ -98,15 +117,16 @@ async def export_jwlibrary(
             media_type="application/octet-stream",
             headers={
                 "Content-Disposition": f'attachment; filename="study-export.jwlibrary"',
-                "X-Export-Result": json.dumps(export_result.model_dump()),
+                "X-Export-Result": _export_result_header(export_result),
             },
         )
     except JWLibraryError as e:
         raise HTTPException(422, str(e))
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(500, f"Export failed: {e}")
+    except Exception:
+        logger.exception("Export failed")
+        raise HTTPException(500, "Export failed")
 
 
 @router.post("/export-new")
@@ -136,13 +156,14 @@ async def export_new_jwlibrary(request_json: str = Form(...)):
             media_type="application/octet-stream",
             headers={
                 "Content-Disposition": f'attachment; filename="study-export.jwlibrary"',
-                "X-Export-Result": json.dumps(result.model_dump()),
+                "X-Export-Result": _export_result_header(result),
             },
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(500, f"Export failed: {e}")
+    except Exception:
+        logger.exception("Export failed")
+        raise HTTPException(500, "Export failed")
 
 
 @router.get("/schema")

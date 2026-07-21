@@ -6,20 +6,44 @@ GET  /api/jwpub/list     — lista las publicaciones cargadas en memoria
 GET  /api/jwpub/{symbol} — devuelve una publicación completa con todos sus documentos
 GET  /api/jwpub/{symbol}/doc/{doc_id} — devuelve un documento específico
 """
-import json
+import logging
+from collections import OrderedDict
+from typing import Optional
+
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse
 
 from ..schemas.jwpub_schemas import JWPUBImportResult, JWPUBPublication, JWPUBDocument, JWPUBTOCItem
 from ..services.jwpub import JWPUBReader, JWPUBError
+from ..upload_utils import read_upload_limited
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/jwpub", tags=["jwpub"])
 
+MAX_UPLOAD_SIZE = 200 * 1024 * 1024  # 200 MB
+
 _reader = JWPUBReader()
 
-# Cache en memoria: symbol → publicación completa
+# Cache LRU en memoria: symbol → publicación completa
 # (en producción, usar Redis o SQLite en backend)
-_publications_cache: dict[str, dict] = {}
+_MAX_CACHED_PUBLICATIONS = 5
+_publications_cache: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _cache_put(symbol: str, data: dict) -> None:
+    """Inserta en el cache LRU, expulsando el más antiguo si excede el límite."""
+    _publications_cache[symbol] = data
+    _publications_cache.move_to_end(symbol)
+    while len(_publications_cache) > _MAX_CACHED_PUBLICATIONS:
+        _publications_cache.popitem(last=False)
+
+
+def _cache_get(symbol: str) -> Optional[dict]:
+    """Obtiene del cache LRU, marcando la entrada como usada recientemente."""
+    if symbol not in _publications_cache:
+        return None
+    _publications_cache.move_to_end(symbol)
+    return _publications_cache[symbol]
 
 
 @router.post("/upload", response_model=JWPUBImportResult)
@@ -32,7 +56,7 @@ async def upload_jwpub(file: UploadFile = File(...)):
     if not file.filename or not file.filename.endswith(".jwpub"):
         raise HTTPException(400, "File must have .jwpub extension")
 
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(file, MAX_UPLOAD_SIZE)
     if not file_bytes:
         raise HTTPException(400, "Empty file")
 
@@ -43,8 +67,8 @@ async def upload_jwpub(file: UploadFile = File(...)):
         pub_info = result.get("publication", {})
         symbol = pub_info.get("symbol", file.filename)
 
-        # Cachear la publicación completa
-        _publications_cache[symbol] = result
+        # Cachear la publicación completa (LRU)
+        _cache_put(symbol, result)
 
         # Construir respuesta
         documents = [
@@ -69,8 +93,11 @@ async def upload_jwpub(file: UploadFile = File(...)):
         )
     except JWPUBError as e:
         raise HTTPException(422, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"JWPUB processing failed: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("JWPUB processing failed")
+        raise HTTPException(500, "JWPUB processing failed")
 
 
 @router.get("/list")
@@ -92,10 +119,10 @@ async def list_publications():
 @router.get("/{symbol}")
 async def get_publication(symbol: str):
     """Devuelve una publicación completa con todos sus documentos."""
-    if symbol not in _publications_cache:
+    data = _cache_get(symbol)
+    if data is None:
         raise HTTPException(404, f"Publication '{symbol}' not found. Upload it first.")
 
-    data = _publications_cache[symbol]
     return {
         "publication": data.get("publication", {}),
         "documents": data.get("documents", []),
@@ -106,10 +133,10 @@ async def get_publication(symbol: str):
 @router.get("/{symbol}/doc/{doc_id}")
 async def get_document(symbol: str, doc_id: int):
     """Devuelve un documento específico de una publicación."""
-    if symbol not in _publications_cache:
+    data = _cache_get(symbol)
+    if data is None:
         raise HTTPException(404, f"Publication '{symbol}' not found.")
 
-    data = _publications_cache[symbol]
     documents = data.get("documents", [])
 
     for doc in documents:
