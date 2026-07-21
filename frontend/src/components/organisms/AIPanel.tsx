@@ -7,6 +7,7 @@ import { SKILLS_METADATA, STREAM_STATES, AI_SKILLS } from "@/types/ai";
 import type { AISkill } from "@/types/ai";
 import { Button } from "@/components/atoms/Button";
 import { Badge } from "@/components/atoms/Badge";
+import { Markdown } from "@/components/atoms/Markdown";
 import { Divider } from "@/components/atoms/Divider";
 import {
   IconClose,
@@ -167,8 +168,8 @@ export function AIPanel({ className }: AIPanelProps) {
                 Generando…
               </Badge>
             )}
-            <div className="prose-reading whitespace-pre-wrap text-reading-light dark:text-reading-dark">
-              {displayContent}
+            <div className="prose-reading text-reading-light dark:text-reading-dark">
+              <Markdown>{displayContent}</Markdown>
               {isStreaming && (
                 <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-amber-600 align-middle" />
               )}

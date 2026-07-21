@@ -3,6 +3,7 @@ import { cn } from "@/utils/cn";
 import { useChat } from "@/hooks/useChat";
 import { Button } from "@/components/atoms/Button";
 import { Divider } from "@/components/atoms/Divider";
+import { Markdown } from "@/components/atoms/Markdown";
 import { IconClose, IconArrowDown } from "@/components/atoms/Icons";
 
 interface ChatPanelProps {
@@ -208,12 +209,18 @@ function MessageBubble({
             : "bg-paper-100 text-reading-light dark:bg-ink-50 dark:text-reading-dark",
         )}
       >
-        <p className="whitespace-pre-wrap font-reading text-sm leading-relaxed">
-          {content}
-          {streaming && (
-            <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-amber-600 align-middle dark:bg-amber-400" />
-          )}
-        </p>
+        {isUser ? (
+          <p className="whitespace-pre-wrap font-reading text-sm leading-relaxed">
+            {content}
+          </p>
+        ) : (
+          <div className="font-reading text-sm leading-relaxed">
+            <Markdown>{content}</Markdown>
+            {streaming && (
+              <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-amber-600 align-middle dark:bg-amber-400" />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
