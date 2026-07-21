@@ -23,6 +23,7 @@ const SQL_WASM_PATH = "/sql-wasm.wasm"; // Servido desde /public
 
 let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
+let initPromise: Promise<Database> | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let fts5Available = false; // Cache: resultado de detección de FTS5
 
@@ -111,29 +112,43 @@ async function saveToIndexedDB(bytes: Uint8Array): Promise<void> {
 
 // ─── Inicialización ──────────────────────────────────────────────
 
-export async function initDatabase(): Promise<Database> {
-  if (db) return db;
+export function initDatabase(): Promise<Database> {
+  if (db) return Promise.resolve(db);
+  // Memoizar la promesa: llamadas concurrentes comparten la misma init
+  // (evita crear dos SQL.Database en paralelo).
+  if (initPromise) return initPromise;
 
-  // Cargar sql.js WASM
-  if (!SQL) {
-    SQL = await initSqlJs({
-      locateFile: () => SQL_WASM_PATH,
-    });
-  }
+  initPromise = (async () => {
+    // Cargar sql.js WASM
+    if (!SQL) {
+      SQL = await initSqlJs({
+        locateFile: () => SQL_WASM_PATH,
+      });
+    }
 
-  // Intentar restaurar desde IndexedDB
-  const savedBytes = await loadFromIndexedDB();
-  if (savedBytes && savedBytes.length > 0) {
-    db = new SQL.Database(savedBytes);
-    // Verificar que el esquema está aplicado
-    ensureSchema(db);
-  } else {
-    // Crear DB nueva
-    db = new SQL.Database();
-    applySchema(db);
-  }
+    // Intentar restaurar desde IndexedDB
+    const savedBytes = await loadFromIndexedDB();
+    let database: Database;
+    if (savedBytes && savedBytes.length > 0) {
+      database = new SQL.Database(savedBytes);
+      // Verificar que el esquema está aplicado
+      ensureSchema(database);
+    } else {
+      // Crear DB nueva
+      database = new SQL.Database();
+      applySchema(database);
+    }
 
-  return db;
+    db = database;
+    return database;
+  })();
+
+  // Si falla, resetear la promesa para permitir reintento
+  initPromise.catch(() => {
+    initPromise = null;
+  });
+
+  return initPromise;
 }
 
 function ensureSchema(database: Database): void {
@@ -183,6 +198,29 @@ export function scheduleSave(): void {
   }, 500);
 }
 
+/**
+ * Fuerza el guardado pendiente inmediatamente (cancela el debounce).
+ * Se llama al ocultar/cerrar la pestaña para no perder cambios recientes.
+ */
+export async function flushPendingSave(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  await saveDatabase();
+}
+
+// Guardar cambios pendientes cuando la pestaña se oculta o se cierra.
+if (typeof window !== "undefined") {
+  const flush = () => {
+    void flushPendingSave();
+  };
+  window.addEventListener("pagehide", flush);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flush();
+  });
+}
+
 // ─── Helpers de query ────────────────────────────────────────────
 
 export interface QueryResult {
@@ -197,13 +235,16 @@ export function queryAll<T = Record<string, unknown>>(
 ): T[] {
   const database = getDatabase();
   const stmt = database.prepare(sql);
-  stmt.bind(params);
-  const rows: T[] = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject() as T);
+  try {
+    stmt.bind(params);
+    const rows: T[] = [];
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject() as T);
+    }
+    return rows;
+  } finally {
+    stmt.free();
   }
-  stmt.free();
-  return rows;
 }
 
 /** Ejecuta un SELECT y devuelve la primera fila o null. */
@@ -222,9 +263,12 @@ export function execute(
 ): void {
   const database = getDatabase();
   const stmt = database.prepare(sql);
-  stmt.bind(params);
-  stmt.step();
-  stmt.free();
+  try {
+    stmt.bind(params);
+    stmt.step();
+  } finally {
+    stmt.free();
+  }
   scheduleSave();
 }
 
@@ -237,9 +281,12 @@ export function executeTransaction(
   try {
     for (const { sql, params } of statements) {
       const stmt = database.prepare(sql);
-      stmt.bind(params);
-      stmt.step();
-      stmt.free();
+      try {
+        stmt.bind(params);
+        stmt.step();
+      } finally {
+        stmt.free();
+      }
     }
     database.exec("COMMIT");
     scheduleSave();
