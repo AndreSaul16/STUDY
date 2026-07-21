@@ -7,6 +7,7 @@ import { notesRepository } from "@/db/repositories/notesRepository";
 import { searchRepository, MARK_OPEN, MARK_CLOSE } from "@/db/repositories/searchRepository";
 import type { NoteRow } from "@/db/repositories/notesRepository";
 import type { SearchResult as SearchHit } from "@/db/repositories/searchRepository";
+import { useDbStore } from "@/store/dbStore";
 import { Badge } from "@/components/atoms/Badge";
 import { Divider } from "@/components/atoms/Divider";
 import { IconSearch, IconNote, IconClose } from "@/components/atoms/Icons";
@@ -26,16 +27,17 @@ const ITEM_HEIGHT = 88;
  */
 export function NotesPanel({ className }: NotesPanelProps) {
   const ready = useDatabaseReady();
+  const dbRevision = useDbStore((s) => s.dbRevision);
   const [query, setQuery] = useState("");
   const [notes, setNotes] = useState<NoteRow[]>([]);
   const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
 
-  // Cargar notas cuando la DB está lista
+  // Cargar notas cuando la DB está lista o cambia (dbRevision)
   useEffect(() => {
     if (!ready) return;
     const all = notesRepository.getAll(500);
     setNotes(all);
-  }, [ready]);
+  }, [ready, dbRevision]);
 
   // Búsqueda con debounce
   useEffect(() => {

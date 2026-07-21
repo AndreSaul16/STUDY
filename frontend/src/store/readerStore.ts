@@ -10,7 +10,9 @@ interface ReaderState {
 
   /** Carga un nuevo artículo (desde JWPUB o mock) */
   setArticle: (article: Article) => void;
-  addAnnotation: (a: Omit<Annotation, "id" | "createdAt">) => string;
+  /** Reemplaza todas las anotaciones (hidratación desde SQLite) */
+  setAnnotations: (annotations: Annotation[]) => void;
+  addAnnotation: (a: Omit<Annotation, "id" | "createdAt">, id?: string) => string;
   removeAnnotation: (id: string) => void;
   updateAnnotationColor: (id: string, color: HighlightColor) => void;
   updateAnnotationNote: (id: string, note: string | null) => void;
@@ -29,11 +31,13 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
 
   setArticle: (article) => set({ article, annotations: [], editingNoteId: null }),
 
-  addAnnotation: (a) => {
-    const id = genId();
-    const annotation: Annotation = { ...a, id, createdAt: Date.now() };
+  setAnnotations: (annotations) => set({ annotations }),
+
+  addAnnotation: (a, id) => {
+    const annId = id ?? genId();
+    const annotation: Annotation = { ...a, id: annId, createdAt: Date.now() };
     set((s) => ({ annotations: [...s.annotations, annotation] }));
-    return id;
+    return annId;
   },
 
   removeAnnotation: (id) =>

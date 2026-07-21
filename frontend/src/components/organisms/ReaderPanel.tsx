@@ -1,8 +1,15 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { useReaderStore } from "@/store/readerStore";
 import { useUIStore } from "@/store/uiStore";
+import { useDbStore } from "@/store/dbStore";
+import { useDatabaseReady } from "@/hooks/useDatabase";
 import { useTextSelection } from "@/hooks/useTextSelection";
 import { useChapterSearch } from "@/hooks/useChapterSearch";
+import {
+  persistAnnotation,
+  loadAnnotations,
+  updateAnnotationNote as persistNoteUpdate,
+} from "@/services/annotationsService";
 import { cn } from "@/utils/cn";
 import { Button } from "@/components/atoms/Button";
 import {
@@ -26,9 +33,14 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
   const article = useReaderStore((s) => s.article);
   const annotations = useReaderStore((s) => s.annotations);
   const addAnnotation = useReaderStore((s) => s.addAnnotation);
+  const setAnnotations = useReaderStore((s) => s.setAnnotations);
   const updateAnnotationNote = useReaderStore((s) => s.updateAnnotationNote);
   const editingNoteId = useReaderStore((s) => s.editingNoteId);
   const setEditingNote = useReaderStore((s) => s.setEditingNote);
+
+  const dbReady = useDatabaseReady();
+  const bumpDbRevision = useDbStore((s) => s.bumpDbRevision);
+  const documentId = article.documentId;
 
   const theme = useUIStore((s) => s.theme);
   const toggleTheme = useUIStore((s) => s.toggleTheme);
@@ -58,20 +70,40 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
     containerRef: scrollRef,
   });
 
+  // Hidratar anotaciones desde SQLite cuando la DB está lista y cambia el documento.
+  useEffect(() => {
+    if (!dbReady) return;
+    try {
+      setAnnotations(loadAnnotations(documentId));
+    } catch (e) {
+      console.warn("[reader] no se pudieron cargar anotaciones:", e);
+    }
+  }, [dbReady, documentId, setAnnotations]);
+
   const handleHighlight = useCallback(
     (color: HighlightColor) => {
       if (!selection) return;
-      addAnnotation({
+      const payload = {
         blockId: selection.blockId,
         startOffset: selection.startOffset,
         endOffset: selection.endOffset,
         selectedText: selection.selectedText,
         color,
         note: null,
-      });
+      };
+      let persistedId: string | undefined;
+      if (dbReady) {
+        try {
+          persistedId = persistAnnotation(payload, documentId);
+          bumpDbRevision();
+        } catch (e) {
+          console.warn("[reader] fallo al persistir la marca, se guarda en memoria:", e);
+        }
+      }
+      addAnnotation(payload, persistedId);
       clearSelection();
     },
-    [selection, addAnnotation, clearSelection],
+    [selection, addAnnotation, clearSelection, dbReady, documentId, bumpDbRevision],
   );
 
   const handleAddNote = useCallback(() => {
@@ -88,15 +120,24 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
   const handleSaveNote = useCallback(
     (note: string | null) => {
       if (!pendingNoteSelection) return;
-      const id = addAnnotation({
+      const payload = {
         ...pendingNoteSelection,
-        color: "yellow",
+        color: "yellow" as HighlightColor,
         note,
-      });
+      };
+      let persistedId: string | undefined;
+      if (dbReady) {
+        try {
+          persistedId = persistAnnotation(payload, documentId);
+          bumpDbRevision();
+        } catch (e) {
+          console.warn("[reader] fallo al persistir la nota, se guarda en memoria:", e);
+        }
+      }
+      addAnnotation(payload, persistedId);
       setPendingNoteSelection(null);
-      void id;
     },
-    [pendingNoteSelection, addAnnotation],
+    [pendingNoteSelection, addAnnotation, dbReady, documentId, bumpDbRevision],
   );
 
   // Anotación en edición de nota
@@ -242,6 +283,19 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
               initialNote={editingAnnotation.note}
               selectedText={editingAnnotation.selectedText}
               onSave={(note) => {
+                if (dbReady) {
+                  try {
+                    persistNoteUpdate(
+                      editingAnnotation.id,
+                      note,
+                      documentId,
+                      editingAnnotation.blockId,
+                    );
+                    bumpDbRevision();
+                  } catch (e) {
+                    console.warn("[reader] fallo al actualizar la nota:", e);
+                  }
+                }
                 updateAnnotationNote(editingAnnotation.id, note);
                 setEditingNote(null);
               }}
