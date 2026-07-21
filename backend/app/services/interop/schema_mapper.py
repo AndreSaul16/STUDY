@@ -26,6 +26,7 @@ from ...schemas.interop_schemas import (
     MarkExportDTO,
     NoteExportDTO,
     TagExportDTO,
+    NoteTagLinkDTO,
     ExportRequest,
 )
 
@@ -51,19 +52,21 @@ class SchemaMapper:
             — counts: {marks, notes, tags, ranges} para el ExportResult.
         """
         statements: list[tuple[str, tuple]] = []
-        counts = {"marks": 0, "notes": 0, "tags": 0, "ranges": 0}
+        counts = {"marks": 0, "notes": 0, "tags": 0, "ranges": 0, "links": 0}
 
         # 1. Insertar Tags (deben existir antes que NoteTag)
-        tag_name_to_id: dict[str, int] = {}
         for tag in request.tags:
             # Usar INSERT OR IGNORE para no duplicar tags existentes
             sql = "INSERT OR IGNORE INTO Tag (Name, Color, Version) VALUES (?, ?, 0)"
             statements.append((sql, (tag.name, tag.color)))
-            tag_name_to_id[tag.name] = 0  # ID se resolverá tras INSERT
+            counts["tags"] += 1
 
-        # 2. Insertar UserMarks + BlockRanges + Notes
-        for mark in request.marks:
+        # 2. Insertar UserMarks + BlockRanges + Notes.
+        #    Guardamos el GUID por índice de marca para resolver NoteTag después.
+        mark_guids: Dict[int, str] = {}
+        for index, mark in enumerate(request.marks):
             user_mark_guid = str(uuid.uuid4())
+            mark_guids[index] = user_mark_guid
             block_range_count = len(mark.ranges)
 
             # UserMark
@@ -83,15 +86,17 @@ class SchemaMapper:
             statements.append((sql_mark, params_mark))
             counts["marks"] += 1
 
-            # BlockRanges — referencian el UserMark recién insertado
-            # Usamos last_insert_rowid() para obtener el UserMarkId
+            # BlockRanges — referencian el UserMark por GUID (no last_insert_rowid,
+            # que se rompería al insertar el segundo rango).
             for rng in mark.ranges:
                 sql_range = (
                     "INSERT INTO BlockRange "
                     "(UserMarkId, BlockIndex, StartToken, EndToken, TokenCount, Version) "
-                    "VALUES (last_insert_rowid(), ?, ?, ?, ?, 0)"
+                    "VALUES ((SELECT UserMarkId FROM UserMark WHERE UserMarkGuid = ?), "
+                    "?, ?, ?, ?, 0)"
                 )
                 params_range = (
+                    user_mark_guid,
                     mark.block_index,
                     rng.start_token,
                     rng.end_token,
@@ -100,17 +105,8 @@ class SchemaMapper:
                 statements.append((sql_range, params_range))
                 counts["ranges"] += 1
 
-            # Note vinculada (opcional)
+            # Note vinculada (opcional) — referencia el UserMark por GUID.
             if mark.note:
-                sql_note = (
-                    "INSERT INTO Note "
-                    "(UserMarkId, DocumentId, BlockRangeCount, Title, Content, LastModified, Version) "
-                    "VALUES (last_insert_rowid(), ?, ?, ?, ?, ?, 0)"
-                )
-                # last_insert_rowid() aquí devuelve el UserMarkId del INSERT anterior
-                # (no del BlockRange, porque Note se inserta inmediatamente después del UserMark)
-                # CORRECCIÓN: necesitamos capturar el UserMarkId explícitamente
-                # Reescribimos usando subquery
                 sql_note = (
                     "INSERT INTO Note "
                     "(UserMarkId, DocumentId, BlockRangeCount, Title, Content, LastModified, Version) "
@@ -127,22 +123,23 @@ class SchemaMapper:
                 statements.append((sql_note, params_note))
                 counts["notes"] += 1
 
-        # 3. Insertar NoteTag links
+        # 3. Insertar NoteTag links. Cada link referencia la marca por índice.
+        #    Usamos INSERT ... SELECT con JOINs: si la nota o la etiqueta no
+        #    existen, el SELECT no devuelve filas y el link se salta sin error.
         for link in request.note_tag_links:
-            tag_name = link.get("tag_name", "")
-            mark_guid = link.get("mark_guid", "")
-            if not tag_name or not mark_guid:
+            mark_guid = mark_guids.get(link.note_mark_index)
+            if not mark_guid or not link.tag_name:
                 continue
             sql_link = (
                 "INSERT INTO NoteTag (NoteId, TagId, Version) "
-                "VALUES ("
-                "  (SELECT NoteId FROM Note WHERE UserMarkId = "
-                "    (SELECT UserMarkId FROM UserMark WHERE UserMarkGuid = ?)), "
-                "  (SELECT TagId FROM Tag WHERE Name = ?), "
-                "  0)"
+                "SELECT n.NoteId, t.TagId, 0 "
+                "FROM Note n "
+                "JOIN UserMark um ON um.UserMarkId = n.UserMarkId "
+                "JOIN Tag t ON t.Name = ? "
+                "WHERE um.UserMarkGuid = ?"
             )
-            statements.append((sql_link, (mark_guid, tag_name)))
-            counts["tags"] += 1
+            statements.append((sql_link, (link.tag_name, mark_guid)))
+            counts["links"] += 1
 
         return statements, counts
 

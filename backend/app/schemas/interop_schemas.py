@@ -21,7 +21,7 @@ Esquema de userData.db (tablas relevantes para inyección):
 """
 
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -81,6 +81,14 @@ class TagExportDTO(BaseModel):
     color: int = Field(0, description="Color de la etiqueta (0 = sin color)")
 
 
+class NoteTagLinkDTO(BaseModel):
+    """Enlace nota-etiqueta, referenciando la marca por su índice en `marks`."""
+    note_mark_index: int = Field(
+        ..., description="Índice de la marca (en `marks`) cuya nota se etiqueta"
+    )
+    tag_name: str = Field(..., description="Nombre de la etiqueta a enlazar")
+
+
 class ExportRequest(BaseModel):
     """
     Request completa para exportar a .jwlibrary.
@@ -88,8 +96,8 @@ class ExportRequest(BaseModel):
     """
     marks: List[MarkExportDTO] = Field(default_factory=list)
     tags: List[TagExportDTO] = Field(default_factory=list)
-    # Mapeo nota → etiquetas (por índice en marks)
-    note_tag_links: List[Dict[str, Any]] = Field(
+    # Mapeo nota → etiquetas (por índice de la marca en `marks`)
+    note_tag_links: List[NoteTagLinkDTO] = Field(
         default_factory=list,
         description="Links nota-etiqueta: {note_mark_index, tag_name}",
     )
