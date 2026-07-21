@@ -143,55 +143,6 @@ class SchemaMapper:
 
         return statements, counts
 
-    def calculate_tokens(self, text: str, start_char: int, end_char: int) -> Tuple[int, int, int]:
-        """
-        Calcula StartToken, EndToken, TokenCount para un rango de texto.
-
-        La app oficial usa tokens (palabras) como unidad. Dividimos el texto
-        completo por espacios y contamos cuántos tokens hay antes del rango
-        y dentro del rango.
-
-        Args:
-            text: Texto completo del bloque
-            start_char: Offset de inicio del rango (en caracteres)
-            end_char: Offset de fin del rango (exclusivo, en caracteres)
-
-        Returns:
-            (start_token, end_token, token_count)
-        """
-        # Dividir el texto en tokens (palabras separadas por espacios)
-        # y mapear cada token a su rango de caracteres
-        tokens: list[tuple[int, int]] = []  # (start_char, end_char) por token
-        i = 0
-        while i < len(text):
-            # Saltar espacios
-            while i < len(text) and text[i].isspace():
-                i += 1
-            if i >= len(text):
-                break
-            # Encontrar fin del token
-            start = i
-            while i < len(text) and not text[i].isspace():
-                i += 1
-            tokens.append((start, i))
-
-        # Encontrar tokens que solapan con el rango [start_char, end_char)
-        start_token = 0
-        end_token = 0
-        for idx, (tok_start, tok_end) in enumerate(tokens):
-            if tok_start < end_char and tok_end > start_char:
-                # Este token solapa con el rango
-                if start_token == 0 and idx > 0:
-                    start_token = idx
-                end_token = idx + 1
-
-        token_count = end_token - start_token
-        return start_token, end_token, token_count
-
-    def generate_mark_guid(self) -> str:
-        """Genera un GUID único para un UserMark."""
-        return str(uuid.uuid4())
-
     def current_timestamp(self) -> str:
         """Timestamp ISO 8601 para LastModified."""
         return datetime.now(timezone.utc).isoformat()

@@ -33,6 +33,8 @@ class ProviderConfig:
     temperature: float = 0.7
     max_tokens: int = 2000
     timeout_seconds: int = 30
+    # Skill activa (para providers que ajustan su salida según la skill, p. ej. mock)
+    skill: Optional[str] = None
 
 
 @dataclass

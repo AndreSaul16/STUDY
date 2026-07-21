@@ -145,8 +145,8 @@ class MockProvider(AIEngineProvider):
         user_prompt: str,
         config: ProviderConfig,
     ) -> AsyncIterator[TokenChunk]:
-        # Detectar la skill desde el system prompt para mockear respuesta adecuada
-        skill = self._detect_skill(system_prompt)
+        # La skill llega explícita en la config (inyectada por AIService).
+        skill = config.skill or "summary"
         tokens = _MOCK_RESPONSES.get(skill, _MOCK_RESPONSES["summary"])
 
         for i, token in enumerate(tokens):
@@ -171,10 +171,3 @@ class MockProvider(AIEngineProvider):
 
     async def health_check(self) -> bool:
         return True
-
-    def _detect_skill(self, system_prompt: str) -> str:
-        """Extrae la skill del system prompt para mockear respuesta adecuada."""
-        for skill in _MOCK_RESPONSES:
-            if skill in system_prompt.lower():
-                return skill
-        return "summary"

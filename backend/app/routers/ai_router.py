@@ -22,11 +22,14 @@ El cliente puede cancelar cerrando la conexión (el generator se detiene).
 """
 
 import json
+import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from ..schemas.ai_schemas import AIRequest
 from ..services.ai import AIService
 from ..services.ai.providers import MockProvider, ProviderConfig
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -84,9 +87,10 @@ async def analyze_stream(request: Request, ai_request: AIRequest):
                     data = data.model_dump()
                 yield _format_sse(event_type, data)
 
-        except Exception as e:
-            # Error fatal — emitir evento de error y cerrar
-            error_data = {"message": str(e), "code": "internal_error"}
+        except Exception:
+            # Error fatal — loguear con traza y emitir un error genérico al cliente
+            logger.exception("AI analyze stream failed")
+            error_data = {"message": "Error interno del servidor", "code": "internal_error"}
             yield _format_sse("error", error_data)
 
     return StreamingResponse(

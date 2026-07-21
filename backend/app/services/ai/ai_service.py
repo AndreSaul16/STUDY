@@ -18,6 +18,7 @@ El AIService SÍ conoce:
   - El formato de eventos SSE (dicts que el router serializa).
 """
 
+import logging
 import time
 from typing import AsyncIterator, Dict, Any
 from ...schemas.ai_schemas import (
@@ -31,6 +32,8 @@ from ...schemas.ai_schemas import (
 from .providers.base import AIEngineProvider, ProviderConfig
 from .prompt_orchestrator import PromptOrchestrator
 from .context_optimizer import ContextOptimizer, estimate_tokens
+
+logger = logging.getLogger(__name__)
 
 
 class AIService:
@@ -100,6 +103,7 @@ class AIService:
                 temperature=request.temperature or self.default_config.temperature,
                 max_tokens=request.max_tokens or max_tokens,
                 timeout_seconds=self.default_config.timeout_seconds,
+                skill=skill.value if hasattr(skill, "value") else str(skill),
             )
 
             # 5. Emitir metadata inicial
@@ -144,12 +148,13 @@ class AIService:
                 ),
             }
 
-        except Exception as e:
-            # Evento de error
+        except Exception:
+            # Loguear con traza; al cliente solo un mensaje genérico
+            logger.exception("AIService stream_analysis failed")
             yield {
                 "type": SSEEventType.ERROR,
                 "data": SSEError(
-                    message=str(e),
+                    message="Error interno del servidor",
                     code="provider_error",
                 ),
             }
@@ -177,6 +182,7 @@ class AIService:
             temperature=request.temperature or self.default_config.temperature,
             max_tokens=request.max_tokens or max_tokens,
             timeout_seconds=self.default_config.timeout_seconds,
+            skill=skill.value if hasattr(skill, "value") else str(skill),
         )
 
         return await self.provider.complete(system_prompt, user_prompt, config)
