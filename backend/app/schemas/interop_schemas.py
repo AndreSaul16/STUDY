@@ -1,23 +1,16 @@
 """
 Interop Schemas — DTOs para el motor de interoperabilidad .jwlibrary.
 
-Define:
-  - El esquema conocido de userData.db (tablas de la app oficial JW Library).
-  - Los DTOs que el frontend envía para inyectar datos.
-  - Las respuestas de los endpoints de import/export.
+Un .jwlibrary es un ZIP con:
+  - userData.db      SQLite con las anotaciones del usuario
+  - userData.db-wal  journal WAL (¡no copiarlo junto a un .db modificado!)
+  - manifest.json    metadatos, incluido el SHA-256 del userData.db
+  - default_thumbnail.png
 
-Referencia: el archivo .jwlibrary es un ZIP que contiene:
-  - userData.db        (SQLite con notas/marcas del usuario)
-  - manifest.json      (metadatos del backup)
-  - contents/          (recursos multimedia opcionales)
-
-Esquema de userData.db (tablas relevantes para inyección):
-  - UserMark: marcas de subrayado con color y GUID
-  - BlockRange: rangos de texto dentro de un bloque
-  - Note: notas enriquecidas vinculadas a marcas
-  - Tag: etiquetas
-  - NoteTag: relación N:M notas-tags
-  - Bookmark: marcadores de posición
+Los DTOs de exportación llevan la información de LOCALIZACIÓN porque en el
+esquema real todo cuelga de la tabla `Location`: una marca no apunta a un
+documento suelto, apunta a un LocationId que identifica el capítulo bíblico
+o la publicación concreta.
 """
 
 from enum import Enum
@@ -47,63 +40,92 @@ class JWMarkColor(int, Enum):
 # ─── DTOs de entrada (desde el frontend) ─────────────────────────
 
 
-class MarkExportDTO(BaseModel):
-    """Una marca de subrayado para exportar a .jwlibrary."""
-    local_id: str = Field(..., description="ID local en nuestra DB")
-    document_id: int = Field(..., description="DocumentId en la publicación")
-    block_index: int = Field(..., description="Índice del bloque dentro del documento")
-    color: JWMarkColor = Field(..., description="Color oficial 1-9")
-    # Rangos de texto (una marca puede tener múltiples rangos)
-    ranges: List["RangeExportDTO"] = Field(
-        default_factory=list, description="Rangos de texto marcados"
-    )
-    # Nota vinculada (opcional)
-    note: Optional["NoteExportDTO"] = None
+class LocationDTO(BaseModel):
+    """
+    Dónde vive una anotación, en los términos de JW Library.
+
+    Es lo que acaba en la tabla `Location`. Dos formas válidas:
+      * Capítulo bíblico → book_number + chapter_number + key_symbol ("nwtsty")
+      * Publicación      → document_id (que es el mismo docId de wol.jw.org)
+    """
+    # Publicación
+    document_id: Optional[int] = Field(None, description="DocumentId (= docId de WOL)")
+    key_symbol: Optional[str] = Field(None, description='Símbolo, ej. "w", "bt", "nwtsty"')
+    issue_tag_number: int = Field(0, description="Número de edición; 0 si no aplica")
+    # Capítulo bíblico
+    book_number: Optional[int] = Field(None, ge=1, le=66)
+    chapter_number: Optional[int] = Field(None, ge=1)
+    # Comunes
+    meps_language: int = Field(1, description="Idioma MEPS; 1 = español")
+    location_type: int = Field(0, description="Location.Type; 0 = documento/capítulo")
+    title: Optional[str] = None
 
 
 class RangeExportDTO(BaseModel):
-    """Un rango de texto dentro de una marca."""
-    start_token: int = Field(..., description="Token de inicio (índice de palabra)")
-    end_token: int = Field(..., description="Token de fin (exclusivo)")
-    token_count: int = Field(..., description="Número de tokens del rango")
+    """
+    Un rango subrayado dentro de un bloque.
+
+    `identifier` es el número de párrafo (data-pid) o de versículo, NO un
+    índice nuestro. `block_type`: 1 = párrafo, 2 = versículo (CHECK del
+    esquema real).
+
+    start_token/end_token son índices de token de JW Library. Se admiten
+    nulos: el esquema los permite, y es lo honesto cuando no se puede
+    reproducir su tokenización con exactitud.
+    """
+    identifier: int = Field(..., description="Nº de párrafo (data-pid) o de versículo")
+    block_type: int = Field(1, ge=1, le=2, description="1 = párrafo, 2 = versículo")
+    start_token: Optional[int] = None
+    end_token: Optional[int] = None
 
 
 class NoteExportDTO(BaseModel):
-    """Una nota enriquecida para exportar."""
-    title: str = Field("", description="Título de la nota")
-    content: str = Field(..., description="Contenido enriquecido (HTML/Markdown)")
-    last_modified: str = Field(..., description="ISO 8601 timestamp")
+    """
+    Una nota.
+
+    No lleva tokens: en el esquema real `Note` se ancla a LocationId +
+    BlockType + BlockIdentifier. Por eso las notas viajan exactas sin
+    depender de la tokenización.
+    """
+    guid: Optional[str] = Field(None, description="Guid estable; se genera si falta")
+    title: str = ""
+    content: str = ""
+    last_modified: Optional[str] = None
+    created: Optional[str] = None
+
+
+class MarkExportDTO(BaseModel):
+    """Una marca de subrayado con sus rangos y su nota opcional."""
+    local_id: str = Field(..., description="ID en nuestra base local")
+    guid: Optional[str] = Field(
+        None,
+        description="UserMarkGuid estable. Es la clave de la fusión: reexportar "
+                    "la misma marca la actualiza en vez de duplicarla.",
+    )
+    location: LocationDTO
+    color: JWMarkColor = Field(..., description="ColorIndex 1-9")
+    style: int = Field(0, description="StyleIndex; 0 = subrayado normal")
+    ranges: List[RangeExportDTO] = Field(default_factory=list)
+    note: Optional[NoteExportDTO] = None
 
 
 class TagExportDTO(BaseModel):
-    """Una etiqueta para exportar."""
-    name: str = Field(..., description="Nombre de la etiqueta")
-    color: int = Field(0, description="Color de la etiqueta (0 = sin color)")
+    """Una etiqueta. En el esquema real Tag es (Type, Name), sin color."""
+    name: str = Field(..., min_length=1)
+    tag_type: int = Field(1, ge=0, le=2, description="Tag.Type; 1 = etiqueta de usuario")
 
 
 class NoteTagLinkDTO(BaseModel):
-    """Enlace nota-etiqueta, referenciando la marca por su índice en `marks`."""
-    note_mark_index: int = Field(
-        ..., description="Índice de la marca (en `marks`) cuya nota se etiqueta"
-    )
-    tag_name: str = Field(..., description="Nombre de la etiqueta a enlazar")
+    """Enlace nota→etiqueta, por índice de la marca en `marks` (tabla TagMap)."""
+    note_mark_index: int
+    tag_name: str
 
 
 class ExportRequest(BaseModel):
-    """
-    Request completa para exportar a .jwlibrary.
-    Contiene todas las marcas, notas y etiquetas a inyectar.
-    """
+    """Todo lo que la app quiere volcar dentro del .jwlibrary del usuario."""
     marks: List[MarkExportDTO] = Field(default_factory=list)
     tags: List[TagExportDTO] = Field(default_factory=list)
-    # Mapeo nota → etiquetas (por índice de la marca en `marks`)
-    note_tag_links: List[NoteTagLinkDTO] = Field(
-        default_factory=list,
-        description="Links nota-etiqueta: {note_mark_index, tag_name}",
-    )
-
-
-# ─── DTOs de respuesta ───────────────────────────────────────────
+    note_tag_links: List[NoteTagLinkDTO] = Field(default_factory=list)
 
 
 class ImportResult(BaseModel):
@@ -127,77 +149,359 @@ class ExportResult(BaseModel):
     errors: List[str] = Field(default_factory=list)
 
 
-# ─── Esquema SQL de userData.db (para referencia y validación) ───
+# ─── Esquema REAL de userData.db ─────────────────────────────────
+#
+# Volcado literal de un backup real de JW Library (schemaVersion 16), no
+# escrito a mano. El esquema anterior estaba inventado: declaraba 6 tablas
+# cuando el real tiene 18, y con columnas que no existen. Contra un archivo
+# real, exportar fallaba en la primera sentencia con
+# "table Tag has no column named Color".
+#
+# Diferencias que importan respecto de aquel:
+#   * `Location` es la tabla central: TODO (marcas, notas, marcadores,
+#     etiquetas) cuelga de un LocationId, no de un DocumentId suelto.
+#   * `UserMark` usa ColorIndex/LocationId/StyleIndex.
+#   * Las etiquetas enlazan por `TagMap`, no por una tabla `NoteTag`.
+#   * `Note` tiene Guid propio y no lleva tokens: se ancla a
+#     LocationId + BlockType + BlockIdentifier.
+#
+# El camino normal de exportación NO recrea el esquema: trabaja sobre una
+# copia del userData.db del propio usuario, que ya lo trae. Esto se conserva
+# para validar y para los tests.
+#
+# La versión de esquema no se escribe aquí: se lee con `PRAGMA user_version`
+# del archivo de origen, para no degradar un backup más nuevo.
 
 USERDATA_DB_SCHEMA = """
--- Esquema conocido de userData.db (JW Library app oficial)
--- Tablas relevantes para la inyección de datos.
+CREATE TABLE BlockRange (   BlockRangeId    INTEGER NOT NULL PRIMARY KEY,   BlockType       INTEGER NOT NULL,   Identifier      INTEGER NOT NULL,   StartToken      INTEGER,   EndToken        INTEGER,   UserMarkId      INTEGER NOT NULL,   CHECK (BlockType BETWEEN 1 AND 2),   FOREIGN KEY(UserMarkId) REFERENCES UserMark(UserMarkId));
 
-CREATE TABLE IF NOT EXISTS UserMark (
-    UserMarkId INTEGER PRIMARY KEY AUTOINCREMENT,
-    DocumentId INTEGER NOT NULL,
-    BlockIndex INTEGER NOT NULL,
-    BlockRangeCount INTEGER NOT NULL DEFAULT 0,
-    Color INTEGER NOT NULL DEFAULT 1,
-    UserMarkGuid TEXT NOT NULL,
-    Slot INTEGER NOT NULL DEFAULT 0,
-    Version INTEGER NOT NULL DEFAULT 0,
-    Insensitive BOOLEAN NOT NULL DEFAULT 0,
-    OriginalColor INTEGER
-);
+CREATE TABLE Bookmark(   BookmarkId              INTEGER NOT NULL PRIMARY KEY,   LocationId              INTEGER NOT NULL,   PublicationLocationId   INTEGER NOT NULL,   Slot                    INTEGER NOT NULL,   Title                   TEXT NOT NULL,   Snippet                 TEXT,   BlockType               INTEGER NOT NULL DEFAULT 0,   BlockIdentifier         INTEGER,   FOREIGN KEY(LocationId) REFERENCES Location(LocationId),   FOREIGN KEY(PublicationLocationId) REFERENCES Location(LocationId),   CONSTRAINT PublicationLocationId_Slot UNIQUE (PublicationLocationId, Slot),   CHECK((BlockType = 0 AND BlockIdentifier IS NULL) OR ((BlockType BETWEEN 1 AND 2) AND BlockIdentifier IS NOT NULL)));
 
-CREATE TABLE IF NOT EXISTS BlockRange (
-    BlockRangeId INTEGER PRIMARY KEY AUTOINCREMENT,
-    UserMarkId INTEGER NOT NULL,
-    BlockIndex INTEGER NOT NULL,
-    StartToken INTEGER NOT NULL,
-    EndToken INTEGER NOT NULL,
-    TokenCount INTEGER NOT NULL,
-    Version INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (UserMarkId) REFERENCES UserMark(UserMarkId) ON DELETE CASCADE
-);
+CREATE TABLE IndependentMedia(
+IndependentMediaId  INTEGER NOT NULL PRIMARY KEY,
+OriginalFilename    TEXT NOT NULL,
+FilePath            TEXT NOT NULL UNIQUE,
+MimeType            TEXT NOT NULL,
+Hash                TEXT NOT NULL,
+CHECK(length(OriginalFilename) > 0),
+CHECK(length(FilePath) > 0),
+CHECK(length(MimeType) > 0),
+CHECK(length(Hash) > 0));
 
-CREATE TABLE IF NOT EXISTS Note (
-    NoteId INTEGER PRIMARY KEY AUTOINCREMENT,
-    UserMarkId INTEGER,
-    DocumentId INTEGER NOT NULL,
-    BlockRangeCount INTEGER NOT NULL DEFAULT 0,
-    Title TEXT NOT NULL DEFAULT '',
-    Content TEXT NOT NULL DEFAULT '',
-    LastModified TEXT NOT NULL,
-    Version INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (UserMarkId) REFERENCES UserMark(UserMarkId) ON DELETE SET NULL
-);
+CREATE TABLE "InputField"(
+LocationId  INTEGER NOT NULL,
+TextTag     TEXT NOT NULL,
+Value       TEXT NOT NULL,
+FOREIGN KEY (LocationId) REFERENCES Location (LocationId),
+CONSTRAINT LocationId_TextTag PRIMARY KEY (LocationId, TextTag));
 
-CREATE TABLE IF NOT EXISTS Tag (
-    TagId INTEGER PRIMARY KEY AUTOINCREMENT,
-    Name TEXT NOT NULL UNIQUE,
-    Color INTEGER NOT NULL DEFAULT 0,
-    Version INTEGER NOT NULL DEFAULT 0
-);
+CREATE TABLE "LastModified"(LastModified TEXT NOT NULL);
 
-CREATE TABLE IF NOT EXISTS NoteTag (
-    NoteTagId INTEGER PRIMARY KEY AUTOINCREMENT,
-    NoteId INTEGER NOT NULL,
-    TagId INTEGER NOT NULL,
-    Version INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (NoteId) REFERENCES Note(NoteId) ON DELETE CASCADE,
-    FOREIGN KEY (TagId) REFERENCES Tag(TagId) ON DELETE CASCADE
-);
+CREATE TABLE "Location"(
+LocationId      INTEGER NOT NULL PRIMARY KEY,
+BookNumber      INTEGER,
+ChapterNumber   INTEGER,
+DocumentId      INTEGER,
+Track           INTEGER,
+IssueTagNumber  INTEGER NOT NULL DEFAULT 0,
+KeySymbol       TEXT,
+MepsLanguage    INTEGER,
+Type            INTEGER NOT NULL,
+Title           TEXT,
+Specialty       TEXT,
+Edition         TEXT,
+UNIQUE(BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type),
+CHECK ((
+Type = 0 AND ( -- Document or Bible chapter
+(DocumentId IS NOT NULL AND DocumentId != 0)
+OR ( -- Track based. Requires DocumentId or KeySymbol.
+Track IS NOT NULL AND (
+(KeySymbol IS NOT NULL AND (length(KeySymbol) > 0))
+OR (DocumentId IS NOT NULL AND DocumentId != 0)))
+OR ( -- Bible book. Requires KeySymbol.
+BookNumber IS NOT NULL AND BookNumber != 0
+AND KeySymbol IS NOT NULL AND (length(KeySymbol) > 0)
+AND (ChapterNumber IS NULL OR ChapterNumber = 0))
+OR ( -- Bible chapter. Requires KeySymbol and BookNumber.
+ChapterNumber IS NOT NULL AND ChapterNumber != 0
+AND BookNumber IS NOT NULL AND BookNumber != 0
+AND KeySymbol IS NOT NULL AND (length(KeySymbol) > 0))))
+OR Type != 0),
+CHECK((
+Type = 1 -- Bible
+AND (BookNumber IS NULL OR BookNumber = 0)
+AND (ChapterNumber IS NULL OR ChapterNumber = 0)
+AND (DocumentId IS NULL OR DocumentId = 0)
+AND KeySymbol IS NOT NULL AND (length(KeySymbol) > 0)
+AND Track IS NULL)
+OR Type != 1),
+CHECK((
+Type IN (2, 3) -- Mediator audio/video
+AND (BookNumber IS NULL OR BookNumber = 0)
+AND (ChapterNumber IS NULL OR ChapterNumber = 0))
+OR Type NOT IN (2, 3)));
 
-CREATE TABLE IF NOT EXISTS Bookmark (
-    BookmarkId INTEGER PRIMARY KEY AUTOINCREMENT,
-    Slot INTEGER NOT NULL DEFAULT 0,
-    PublicationId INTEGER,
-    DocumentId INTEGER,
-    BlockIndex INTEGER,
-    Version INTEGER NOT NULL DEFAULT 0
-);
+CREATE TABLE "Note"(
+NoteId           INTEGER NOT NULL PRIMARY KEY,
+Guid             TEXT NOT NULL UNIQUE,
+UserMarkId       INTEGER,
+LocationId       INTEGER,
+Title            TEXT,
+Content          TEXT,
+LastModified     TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+Created          TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+BlockType        INTEGER NOT NULL DEFAULT 0,
+BlockIdentifier  INTEGER,
+CHECK((BlockType = 0 AND BlockIdentifier IS NULL) OR((BlockType BETWEEN 1 AND 2) AND BlockIdentifier IS NOT NULL)),
+FOREIGN KEY(UserMarkId) REFERENCES UserMark(UserMarkId),
+FOREIGN KEY(LocationId) REFERENCES Location(LocationId));
 
--- Índices para rendimiento
-CREATE INDEX IF NOT EXISTS idx_usermark_document ON UserMark(DocumentId);
-CREATE INDEX IF NOT EXISTS idx_blockrange_usermark ON BlockRange(UserMarkId);
-CREATE INDEX IF NOT EXISTS idx_note_document ON Note(DocumentId);
-CREATE INDEX IF NOT EXISTS idx_notetag_note ON NoteTag(NoteId);
-CREATE INDEX IF NOT EXISTS idx_notetag_tag ON NoteTag(TagId);
+CREATE TABLE "PlaylistItem"(
+PlaylistItemId           INTEGER NOT NULL PRIMARY KEY,
+Label                    TEXT NOT NULL,
+StartTrimOffsetTicks     INTEGER,
+EndTrimOffsetTicks       INTEGER,
+Accuracy                 INTEGER NOT NULL,
+EndAction                INTEGER NOT NULL,
+ThumbnailFilePath        TEXT,
+FOREIGN KEY(Accuracy) REFERENCES PlaylistItemAccuracy(PlaylistItemAccuracyId),
+FOREIGN KEY(ThumbnailFilePath) REFERENCES IndependentMedia(FilePath),
+CHECK(length(Label) > 0),
+CHECK(EndAction IN(0, 1, 2, 3)));
+
+CREATE TABLE PlaylistItemAccuracy(
+PlaylistItemAccuracyId  INTEGER NOT NULL PRIMARY KEY,
+Description             TEXT NOT NULL UNIQUE);
+
+CREATE TABLE PlaylistItemIndependentMediaMap(
+PlaylistItemId      INTEGER NOT NULL,
+IndependentMediaId  INTEGER NOT NULL,
+DurationTicks       INTEGER NOT NULL,
+PRIMARY KEY(PlaylistItemId, IndependentMediaId),
+FOREIGN KEY(PlaylistItemId) REFERENCES PlaylistItem(PlaylistItemId),
+FOREIGN KEY(IndependentMediaId) REFERENCES IndependentMedia(IndependentMediaId))
+WITHOUT ROWID;
+
+CREATE TABLE PlaylistItemLocationMap(
+PlaylistItemId      INTEGER NOT NULL,
+LocationId          INTEGER NOT NULL,
+MajorMultimediaType INTEGER NOT NULL,
+BaseDurationTicks   INTEGER,
+PRIMARY KEY(PlaylistItemId, LocationId),
+FOREIGN KEY(PlaylistItemId) REFERENCES PlaylistItem(PlaylistItemId),
+FOREIGN KEY(LocationId) REFERENCES Location(LocationId))
+WITHOUT ROWID;
+
+CREATE TABLE PlaylistItemMarker(
+PlaylistItemMarkerId        INTEGER NOT NULL PRIMARY KEY,
+PlaylistItemId              INTEGER NOT NULL,
+Label                       TEXT NOT NULL,
+StartTimeTicks              INTEGER NOT NULL,
+DurationTicks               INTEGER NOT NULL,
+EndTransitionDurationTicks  INTEGER NOT NULL,
+UNIQUE(PlaylistItemId, StartTimeTicks),
+FOREIGN KEY(PlaylistItemId) REFERENCES PlaylistItem(PlaylistItemId));
+
+CREATE TABLE PlaylistItemMarkerBibleVerseMap(
+PlaylistItemMarkerId        INTEGER NOT NULL,
+VerseId                     INTEGER NOT NULL,
+PRIMARY KEY(PlaylistItemMarkerId, VerseId),
+FOREIGN KEY(PlaylistItemMarkerId) REFERENCES PlaylistItemMarker(PlaylistItemMarkerId))
+WITHOUT ROWID;
+
+CREATE TABLE PlaylistItemMarkerParagraphMap(
+PlaylistItemMarkerId        INTEGER NOT NULL,
+MepsDocumentId              INTEGER NOT NULL,
+ParagraphIndex              INTEGER NOT NULL,
+MarkerIndexWithinParagraph  INTEGER NOT NULL,
+PRIMARY KEY(PlaylistItemMarkerId, MepsDocumentId, ParagraphIndex, MarkerIndexWithinParagraph),
+FOREIGN KEY(PlaylistItemMarkerId) REFERENCES PlaylistItemMarker(PlaylistItemMarkerId))
+WITHOUT ROWID;
+
+CREATE TABLE Tag(
+TagId          INTEGER NOT NULL PRIMARY KEY,
+Type           INTEGER NOT NULL,
+Name           TEXT NOT NULL,
+UNIQUE(Type, Name),
+CHECK(length(Name) > 0),
+CHECK(Type IN (0, 1, 2)));
+
+CREATE TABLE TagMap (   TagMapId          INTEGER NOT NULL PRIMARY KEY,   PlaylistItemId    INTEGER,   LocationId        INTEGER,   NoteId            INTEGER,   TagId             INTEGER NOT NULL,   Position          INTEGER NOT NULL,   FOREIGN KEY(TagId) REFERENCES Tag(TagId),   FOREIGN KEY(PlaylistItemId) REFERENCES PlaylistItem(PlaylistItemId),   FOREIGN KEY(LocationId) REFERENCES Location(LocationId),   FOREIGN KEY(NoteId) REFERENCES Note(NoteId),   CONSTRAINT TagId_Position UNIQUE(TagId, Position),   CONSTRAINT TagId_NoteId UNIQUE(TagId, NoteId),   CONSTRAINT TagId_LocationId UNIQUE(TagId, LocationId),   CHECK(       (NoteId IS NULL AND LocationId IS NULL AND PlaylistItemId IS NOT NULL) OR       (LocationId IS NULL AND PlaylistItemId IS NULL AND NoteId IS NOT NULL) OR       (PlaylistItemId IS NULL AND NoteId IS NULL AND LocationId IS NOT NULL)));
+
+CREATE TABLE UserMark (   UserMarkId      INTEGER NOT NULL PRIMARY KEY,   ColorIndex      INTEGER NOT NULL,   LocationId      INTEGER NOT NULL,   StyleIndex      INTEGER NOT NULL,   UserMarkGuid    TEXT NOT NULL UNIQUE,   Version         INTEGER NOT NULL,   FOREIGN KEY(LocationId) REFERENCES Location(LocationId));
+
+CREATE INDEX IX_BlockRange_UserMarkId ON BlockRange(UserMarkId);
+
+CREATE INDEX IX_Location_KeySymbol_MepsLanguage_BookNumber_ChapterNumber ON
+Location(KeySymbol, MepsLanguage, BookNumber, ChapterNumber);
+
+CREATE UNIQUE INDEX IX_Location_Media ON Location(
+KeySymbol,
+IssueTagNumber,
+MepsLanguage,
+DocumentId,
+Track,
+Type,
+COALESCE(Specialty, ''),
+COALESCE(Edition, ''));
+
+CREATE INDEX IX_Location_MepsLanguage_DocumentId ON Location(MepsLanguage, DocumentId);
+
+CREATE INDEX IX_Note_LastModified_LocationId ON Note(LastModified, LocationId);
+
+CREATE INDEX IX_Note_LocationId_BlockIdentifier ON Note(LocationId, BlockIdentifier);
+
+CREATE INDEX IX_PlaylistItemIndependentMediaMap_IndependentMediaId ON PlaylistItemIndependentMediaMap(IndependentMediaId);
+
+CREATE INDEX IX_PlaylistItemLocationMap_LocationId ON PlaylistItemLocationMap(LocationId);
+
+CREATE INDEX IX_PlaylistItem_ThumbnailFilePath ON PlaylistItem(ThumbnailFilePath);
+
+CREATE INDEX IX_TagMap_LocationId_TagId_Position ON TagMap(LocationId, TagId, Position);
+
+CREATE INDEX IX_TagMap_NoteId_TagId_Position ON TagMap(NoteId, TagId, Position);
+
+CREATE INDEX IX_TagMap_PlaylistItemId_TagId_Position ON TagMap(PlaylistItemId, TagId, Position);
+
+CREATE INDEX IX_TagMap_TagId ON TagMap(TagId);
+
+CREATE INDEX IX_UserMark_LocationId ON UserMark(LocationId);
+
+CREATE TRIGGER TR_Raise_Error_Before_Delete_LastModified
+BEFORE DELETE ON LastModified
+BEGIN
+SELECT RAISE (FAIL, 'DELETE FROM LastModified not allowed');
+END;
+
+CREATE TRIGGER TR_Raise_Error_Before_Insert_LastModified
+BEFORE INSERT ON LastModified
+BEGIN
+SELECT RAISE (FAIL, 'INSERT INTO LastModified not allowed');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Delete_BlockRange
+DELETE ON BlockRange
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Delete_Bookmark
+DELETE ON Bookmark
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Delete_IndependentMedia
+DELETE ON IndependentMedia
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Delete_Note
+DELETE ON Note
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Delete_Tag
+DELETE ON Tag
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Delete_TagMap
+DELETE ON TagMap
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Delete_UserMark
+DELETE ON UserMark
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Insert_BlockRange
+INSERT ON BlockRange
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Insert_Bookmark
+INSERT ON Bookmark
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Insert_IndependentMedia
+INSERT ON IndependentMedia
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Insert_Note
+INSERT ON Note
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Insert_Tag
+INSERT ON Tag
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Insert_TagMap
+INSERT ON TagMap
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Insert_UserMark
+INSERT ON UserMark
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Update_BlockRange
+UPDATE ON BlockRange
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Update_Bookmark
+UPDATE ON Bookmark
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Update_IndependentMedia
+UPDATE ON IndependentMedia
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Update_Note
+UPDATE ON Note
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Update_Tag
+UPDATE ON Tag
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Update_TagMap
+UPDATE ON TagMap
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+
+CREATE TRIGGER TR_Update_LastModified_Update_UserMark
+UPDATE ON UserMark
+BEGIN
+UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
 """

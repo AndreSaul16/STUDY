@@ -20,7 +20,6 @@ interface InteropPanelProps {
  * Permite:
  *  - Importar un .jwlibrary para analizar su contenido.
  *  - Exportar notas/marcas a un .jwlibrary existente (inyección).
- *  - Crear un .jwlibrary nuevo desde cero.
  */
 export function InteropPanel({ className }: InteropPanelProps) {
   const [importResult, setImportResult] = useState<ImportResultDTO | null>(null);
@@ -29,34 +28,87 @@ export function InteropPanel({ className }: InteropPanelProps) {
   const importFileRef = useRef<HTMLInputElement>(null);
   const exportFileRef = useRef<HTMLInputElement>(null);
 
-  const buildExportRequest = (): ExportRequestDTO => {
-    const notesByMark = new Map(
-      notesRepository.getAllForExport().filter((note) => note.mark_id).map((note) => [note.mark_id!, note]),
-    );
-    const marks = marksRepository.getAll().map((mark) => {
-      const tokenCount = mark.token_count || mark.selected_text.trim().match(/\S+/g)?.length || 0;
-      const note = notesByMark.get(mark.mark_id);
-      const colors: Record<string, number> = { yellow: 1, blue: 2, green: 3, orange: 4, pink: 7 };
+  /** Color local → ColorIndex de JW Library (1-9). */
+  const COLOR_INDEX: Record<string, number> = {
+    yellow: 1,
+    blue: 2,
+    green: 3,
+    orange: 4,
+    pink: 7,
+  };
+
+  /**
+   * Reconstruye la localización de JW Library a partir de la marca local.
+   *
+   * `publication_key` y `document_id` los fija `toArticle.ts` al abrir algo:
+   *   nwt → documentId = nºLibro * 1000 + capítulo  → capítulo bíblico
+   *   resto → documentId es el docId de wol.jw.org  → publicación
+   *
+   * Devuelve null cuando no se puede situar con certeza; esas marcas se
+   * omiten y se avisa, en vez de mandarlas a un sitio equivocado.
+   */
+  const buildLocation = (mark: { document_id: number; publication_key: string }) => {
+    if (mark.publication_key === "nwt") {
+      const bookNumber = Math.floor(mark.document_id / 1000);
+      const chapterNumber = mark.document_id % 1000;
+      if (bookNumber < 1 || bookNumber > 66 || chapterNumber < 1) return null;
       return {
+        book_number: bookNumber,
+        chapter_number: chapterNumber,
+        key_symbol: "nwtsty",
+        meps_language: 1,
+      };
+    }
+
+    // El texto del día no tiene un documento propio en JW Library.
+    if (mark.publication_key === "es") return null;
+
+    return { document_id: mark.document_id, meps_language: 1 };
+  };
+
+  const buildExportRequest = (): ExportRequestDTO => {
+    const exportableNotes = notesRepository.getAllForExport();
+    const notesByMark = new Map(
+      exportableNotes.filter((note) => note.mark_id).map((note) => [note.mark_id!, note]),
+    );
+
+    const marks = marksRepository.getAll().flatMap((mark) => {
+      const location = buildLocation(mark);
+      if (!location) return [];
+
+      const note = notesByMark.get(mark.mark_id);
+      // BlockType 2 = versículo (Biblia), 1 = párrafo.
+      const blockType = mark.publication_key === "nwt" ? 2 : 1;
+
+      return [{
         local_id: mark.mark_id,
-        document_id: mark.document_id,
-        block_index: mark.block_id,
-        color: colors[mark.color] ?? 1,
-        ranges: [{ start_token: mark.start_token, end_token: mark.end_token || tokenCount, token_count: tokenCount }],
+        // El id local hace de UserMarkGuid: reexportar actualiza la misma
+        // marca en vez de duplicarla.
+        guid: mark.mark_id,
+        location,
+        color: COLOR_INDEX[mark.color] ?? 1,
+        style: 0,
+        // Sin start_token/end_token a propósito: la tokenización de JW
+        // Library no es partir por espacios y todavía no se conoce. Mandar
+        // números inventados pondría el subrayado en palabras equivocadas.
+        ranges: [{ identifier: mark.block_id, block_type: blockType }],
         ...(note ? { note: {
+          guid: note.note_id,
           title: note.title,
           content: note.content,
           last_modified: new Date(note.last_modified * 1000).toISOString(),
         } } : {}),
-      };
+      }];
     });
+
     const markIndex = new Map(marks.map((mark, index) => [mark.local_id, index]));
     const noteToMark = new Map(
-      notesRepository.getAllForExport().filter((note) => note.mark_id).map((note) => [note.note_id, note.mark_id!]),
+      exportableNotes.filter((note) => note.mark_id).map((note) => [note.note_id, note.mark_id!]),
     );
+
     return {
       marks,
-      tags: tagsRepository.getAll().map((tag) => ({ name: tag.name, color: tag.color })),
+      tags: tagsRepository.getAll().map((tag) => ({ name: tag.name, tag_type: 1 })),
       note_tag_links: tagsRepository.getAllNoteTagLinks().flatMap((link) => {
         const markId = noteToMark.get(link.note_id);
         const index = markId ? markIndex.get(markId) : undefined;
@@ -92,19 +144,6 @@ export function InteropPanel({ className }: InteropPanelProps) {
     }
   };
 
-  const handleExportNew = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const request = buildExportRequest();
-      const blob = await jwlibraryClient.exportNew(request);
-      jwlibraryClient.downloadBlob(blob, "study-new.jwlibrary");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Export failed");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className={cn("flex h-full flex-col overflow-y-auto p-4", className)}>
@@ -213,17 +252,15 @@ export function InteropPanel({ className }: InteropPanelProps) {
 
         <Divider variant="dotted" className="my-2" />
 
-        <p className="font-ui text-xs text-muted-light dark:text-muted-dark">
-          O crea un backup nuevo desde cero.
+        {/* Antes había aquí un botón «Crear .jwlibrary nuevo». Se ha quitado:
+            restaurar en JW Library REEMPLAZA todos los datos del dispositivo,
+            así que un archivo creado desde cero borraría todo lo que tienes
+            en el móvil. El único camino seguro es partir de tu backup. */}
+        <p className="font-ui text-[11px] leading-relaxed text-muted-light dark:text-muted-dark">
+          Parte siempre de un backup recién exportado del móvil: al restaurar,
+          JW Library reemplaza todos los datos del dispositivo, y así conservas
+          lo que ya tenías más lo que hagas aquí.
         </p>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={handleExportNew}
-          disabled={busy}
-        >
-          Crear .jwlibrary nuevo
-        </Button>
       </section>
 
       {error && (

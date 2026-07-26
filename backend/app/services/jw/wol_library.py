@@ -96,6 +96,16 @@ class WolBlock:
     block_id: int
     block_type: str
     content: str
+    paragraph_id: int | None = None
+    """
+    Número de párrafo de la publicación (atributo ``data-pid`` de WOL).
+
+    NO es lo mismo que ``block_id``, que es un contador nuestro. Este es el
+    identificador que usa JW Library en ``BlockRange.Identifier`` para anclar
+    un subrayado, así que es imprescindible para que una marca hecha aquí
+    caiga en el párrafo correcto al volver al móvil. Es None en los bloques
+    que WOL no numera (títulos, encabezados).
+    """
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -260,7 +270,20 @@ def _extract_blocks(article) -> list[WolBlock]:
             "paragraph",
         )
 
-        blocks.append(WolBlock(block_id=next_id, block_type=block_type, content=text))
+        raw_pid = para.get("data-pid")
+        try:
+            paragraph_id = int(raw_pid) if raw_pid is not None else None
+        except (TypeError, ValueError):
+            paragraph_id = None
+
+        blocks.append(
+            WolBlock(
+                block_id=next_id,
+                block_type=block_type,
+                content=text,
+                paragraph_id=paragraph_id,
+            )
+        )
         next_id += 1
 
     return blocks

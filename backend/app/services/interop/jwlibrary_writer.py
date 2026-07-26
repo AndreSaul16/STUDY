@@ -1,265 +1,263 @@
 """
-JWLibraryWriter — inyecta datos en userData.db y recomprime el .jwlibrary.
+JWLibraryWriter — fusiona las anotaciones de la app en un .jwlibrary del usuario.
 
-Flujo:
-  1. Recibe el userData.db original (bytes) + ExportRequest.
-  2. Abre userData.db en memoria (sqlite3 :memory:).
-  3. Ejecuta las sentencias SQL del SchemaMapper en una transacción.
-  4. Si algo falla, hace rollback (atomicidad).
-  5. Serializa el DB modificado a bytes.
-  6. Recompresa con los archivos originales (manifest.json, contents/) +
-     el userData.db modificado en un nuevo ZIP .jwlibrary.
+Parte SIEMPRE de un backup real del usuario y le añade lo nuevo. No genera
+archivos desde cero a propósito: restaurar en JW Library REEMPLAZA todos los
+datos del dispositivo, así que un archivo que no contenga lo que ya tenías
+equivale a borrarlo. Partir de tu backup es lo que hace que el viaje
+móvil → ordenador → móvil no pierda nada.
 
-Seguridad:
-  - Todas las sentencias usan parámetros (?) — cero concatenación SQL.
-  - Transacción atómica: o se inyecta todo, o nada.
-  - No se ejecuta código SQL del archivo de entrada (solo INSERTs nuestros).
-  - El userData.db original se valida como SQLite válido antes de abrir.
+Empaquetar bien es tan importante como el SQL. Un .jwlibrary válido exige
+cuatro cosas que antes no se hacían y que JW Library comprueba:
+
+  1. `manifest.userDataBackup.hash` = SHA-256 del userData.db FINAL.
+     Antes se copiaba el manifest original tal cual, así que el hash apuntaba
+     a la base vieja y no cuadraba.
+  2. La tabla `LastModified` DENTRO de la base debe coincidir con
+     `manifest.userDataBackup.lastModifiedDate`.
+  3. `schemaVersion` se lee del propio archivo (`PRAGMA user_version`), nunca
+     se fija a mano: escribir uno más bajo degradaría un backup más nuevo.
+  4. El ZIP NO debe llevar `userData.db-wal` ni `-shm`. Copiar un WAL viejo
+     junto a una base modificada permite que SQLite lo reproduzca encima.
+
+Los puntos 1-3 están verificados contra JWLManager (MIT, erykjj/jwlmanager),
+cuya rutina de empaquetado sirvió de referencia; el punto 4 salió de inspeccionar
+un backup real, que sí trae WAL.
 """
 
+from __future__ import annotations
+
+import hashlib
 import io
-import zipfile
+import json
+import os
+import shutil
 import sqlite3
 import tempfile
-import os
+import zipfile
 from typing import Optional, Tuple
+
 from ...schemas.interop_schemas import ExportRequest, ExportResult
-from .schema_mapper import SchemaMapper
-from .jwlibrary_reader import JWLibraryError, MAX_ZIP_SIZE
+from .schema_mapper import SchemaMapper, _now
+from .jwlibrary_reader import MAX_ZIP_SIZE
+
+DB_NAME = "userData.db"
+# Archivos del ZIP original que NO se copian a la salida.
+_EXCLUIR = {DB_NAME, f"{DB_NAME}-wal", f"{DB_NAME}-shm"}
 
 
 class JWLibraryWriter:
-    """Inyecta datos en userData.db y recomprime el .jwlibrary."""
+    """Fusiona anotaciones en un .jwlibrary y lo vuelve a empaquetar."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.mapper = SchemaMapper()
 
     def write(
         self,
         original_zip_bytes: bytes,
-        original_db_bytes: bytes,
+        original_db_bytes: bytes,  # noqa: ARG002 — se lee del ZIP, se mantiene por compatibilidad
         request: ExportRequest,
     ) -> Tuple[ExportResult, bytes]:
         """
-        Inyecta datos en userData.db y devuelve un nuevo .jwlibrary.
+        Devuelve un .jwlibrary nuevo = el backup del usuario + lo de la app.
 
-        Args:
-            original_zip_bytes: Bytes del ZIP .jwlibrary original
-            original_db_bytes: Bytes del userData.db original
-            request: Datos a inyectar (marcas, notas, etiquetas)
-
-        Returns:
-            (ExportResult, new_jwlibrary_bytes)
+        Nunca modifica la entrada. Si algo falla, devuelve success=False con el
+        motivo y cero bytes, en vez de un archivo a medias.
         """
         errors: list[str] = []
+        workdir = tempfile.mkdtemp(prefix="jwl-")
 
-        # 1. Inyectar datos en userData.db
-        modified_db_bytes, inject_counts, inject_errors = self._inject_data(
-            original_db_bytes, request
-        )
-        errors.extend(inject_errors)
-
-        if not modified_db_bytes:
-            return ExportResult(success=False, errors=errors), b""
-
-        # 2. Recompresar el .jwlibrary
-        new_zip_bytes, zip_errors = self._repackage(
-            original_zip_bytes, modified_db_bytes
-        )
-        errors.extend(zip_errors)
-
-        if not new_zip_bytes:
-            return ExportResult(success=False, errors=errors), b""
-
-        return (
-            ExportResult(
-                success=len(errors) == 0,
-                marks_injected=inject_counts.get("marks", 0),
-                notes_injected=inject_counts.get("notes", 0),
-                tags_injected=inject_counts.get("tags", 0),
-                file_size_bytes=len(new_zip_bytes),
-                errors=errors,
-            ),
-            new_zip_bytes,
-        )
-
-    def _inject_data(
-        self, db_bytes: bytes, request: ExportRequest
-    ) -> Tuple[Optional[bytes], dict, list[str]]:
-        """
-        Abre userData.db, inyecta datos en transacción, devuelve bytes.
-
-        Usa archivo temporal porque sqlite3 :memory: no se puede serializar
-        directamente a bytes sin la API de backup (no disponible en stdlib).
-        """
-        counts: dict[str, int] = {}
-        errors: list[str] = []
-
-        # Mapear request a sentencias SQL
-        statements, counts = self.mapper.map_export_request(request)
-
-        tmp_path = None
         try:
-            # Escribir DB original a archivo temporal
-            tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-            tmp.write(db_bytes)
-            tmp.close()
-            tmp_path = tmp.name
-
-            # Abrir y ejecutar en transacción
-            conn = sqlite3.connect(tmp_path)
-            conn.execute("PRAGMA foreign_keys = ON")
-            conn.execute("PRAGMA journal_mode = WAL")
-
             try:
-                conn.execute("BEGIN TRANSACTION")
-                for sql, params in statements:
-                    conn.execute(sql, params)
-                conn.execute("COMMIT")
-            except sqlite3.Error as e:
-                conn.execute("ROLLBACK")
-                errors.append(f"SQL injection failed (rolled back): {e}")
-                conn.close()
-                os.unlink(tmp_path)
-                return None, counts, errors
+                zf = zipfile.ZipFile(io.BytesIO(original_zip_bytes))
+            except zipfile.BadZipFile:
+                return ExportResult(success=False, errors=["El archivo no es un .jwlibrary válido"]), b""
 
-            conn.close()
+            if DB_NAME not in zf.namelist():
+                return ExportResult(success=False, errors=["El archivo no contiene userData.db"]), b""
 
-            # Leer el DB modificado
-            with open(tmp_path, "rb") as f:
-                modified_bytes = f.read()
+            db_path = os.path.join(workdir, DB_NAME)
+            with open(db_path, "wb") as f:
+                f.write(zf.read(DB_NAME))
 
-            return modified_bytes, counts, errors
+            # Consolidar el WAL dentro de la base antes de tocar nada: si no,
+            # los cambios que viven en el journal se quedarían fuera.
+            self._checkpoint_wal(zf, workdir, db_path)
 
-        except Exception as e:
-            errors.append(f"Failed to inject data: {e}")
-            return None, counts, errors
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-    def _repackage(
-        self, original_zip_bytes: bytes, modified_db_bytes: bytes
-    ) -> Tuple[Optional[bytes], list[str]]:
-        """
-        Recompresa el .jwlibrary: copia todos los archivos del ZIP original
-        pero sustituye userData.db por la versión modificada.
-        """
-        errors: list[str] = []
-
-        try:
-            # Leer ZIP original
-            original_zf = zipfile.ZipFile(io.BytesIO(original_zip_bytes), mode="r")
-            original_items = original_zf.infolist()
-
-            # Protección zip-bomb al re-empaquetar: validar tamaños declarados
-            total = 0
-            for item in original_items:
-                if item.filename == "userData.db":
-                    continue
-                if item.file_size > MAX_ZIP_SIZE:
-                    errors.append(
-                        f"ZIP entry too large: {item.filename}"
-                    )
-                    return None, errors
-                total += item.file_size
-            if total > 4 * MAX_ZIP_SIZE:
-                errors.append("ZIP uncompressed size too large (possible zip bomb)")
-                return None, errors
-
-            # Crear nuevo ZIP
-            output = io.BytesIO()
-            with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as new_zf:
-                for item in original_items:
-                    if item.filename == "userData.db":
-                        # Sustituir por la versión modificada
-                        new_zf.writestr(item, modified_db_bytes)
-                    else:
-                        # Copiar archivo original tal cual
-                        data = original_zf.read(item.filename)
-                        new_zf.writestr(item, data)
-
-            original_zf.close()
-            return output.getvalue(), errors
-
-        except Exception as e:
-            errors.append(f"Failed to repackage ZIP: {e}")
-            return None, errors
-
-    def create_fresh_library(self, request: ExportRequest) -> Tuple[ExportResult, bytes]:
-        """
-        Crea un .jwlibrary desde cero (sin archivo original).
-
-        Útil cuando el usuario quiere exportar sin tener un backup previo.
-        Crea un userData.db vacío con el esquema oficial, inyecta los datos,
-        y empaqueta con un manifest.json minimal.
-        """
-        from ...schemas.interop_schemas import USERDATA_DB_SCHEMA
-        import json
-
-        errors: list[str] = []
-
-        # 1. Crear userData.db vacío
-        tmp_path = None
-        try:
-            tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-            tmp.close()
-            tmp_path = tmp.name
-
-            conn = sqlite3.connect(tmp_path)
-            conn.executescript(USERDATA_DB_SCHEMA)
-
-            # 2. Inyectar datos
-            statements, counts = self.mapper.map_export_request(request)
-            try:
-                conn.execute("BEGIN TRANSACTION")
-                for sql, params in statements:
-                    conn.execute(sql, params)
-                conn.execute("COMMIT")
-            except sqlite3.Error as e:
-                conn.execute("ROLLBACK")
-                errors.append(f"SQL injection failed: {e}")
-                conn.close()
-                os.unlink(tmp_path)
+            counts, merge_errors = self._merge(db_path, request)
+            errors.extend(merge_errors)
+            if counts is None:
                 return ExportResult(success=False, errors=errors), b""
 
-            conn.close()
+            manifest = self._build_manifest(zf, db_path)
 
-            with open(tmp_path, "rb") as f:
-                db_bytes = f.read()
-
-            # 3. Crear manifest.json
-            manifest = {
-                "version": 1,
-                "createdDate": self.mapper.current_timestamp(),
-                "appVersion": "Study-Export-1.0",
-                "deviceName": "Study Web App",
-            }
-            manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
-
-            # 4. Empaquetar ZIP
-            output = io.BytesIO()
-            with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("userData.db", db_bytes)
-                zf.writestr("manifest.json", manifest_bytes)
-
-            zip_bytes = output.getvalue()
+            zip_bytes, zip_errors = self._repackage(zf, db_path, manifest)
+            errors.extend(zip_errors)
+            if zip_bytes is None:
+                return ExportResult(success=False, errors=errors), b""
 
             return (
                 ExportResult(
-                    success=len(errors) == 0,
-                    marks_injected=counts.get("marks", 0),
-                    notes_injected=counts.get("notes", 0),
-                    tags_injected=counts.get("tags", 0),
+                    success=True,
+                    marks_injected=counts.marks_created + counts.marks_updated,
+                    notes_injected=counts.notes_created + counts.notes_updated,
+                    tags_injected=counts.tags_created,
                     file_size_bytes=len(zip_bytes),
-                    errors=errors,
+                    errors=errors + counts.skipped,
                 ),
                 zip_bytes,
             )
 
-        except Exception as e:
-            errors.append(f"Failed to create fresh library: {e}")
-            return ExportResult(success=False, errors=errors), b""
         finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    # ─── Pasos ───────────────────────────────────────────────────
+
+    def _checkpoint_wal(
+        self, zf: zipfile.ZipFile, workdir: str, db_path: str
+    ) -> None:
+        """
+        Vuelca el WAL del backup dentro del userData.db y lo descarta.
+
+        Un .jwlibrary puede traer `userData.db-wal` con datos que aún no están
+        en el archivo principal. Hay que escribirlo al lado, abrir la base para
+        que SQLite lo reproduzca, y hacer TRUNCATE para dejarlo integrado.
+        """
+        nombres = zf.namelist()
+        for sufijo in ("-wal", "-shm"):
+            nombre = f"{DB_NAME}{sufijo}"
+            if nombre in nombres:
+                with open(os.path.join(workdir, nombre), "wb") as f:
+                    f.write(zf.read(nombre))
+
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            # Pasar a journal DELETE para el resto del proceso: si siguiera en
+            # WAL, las escrituras posteriores (la fusión y la tabla
+            # LastModified) irían a un -wal que excluimos del ZIP, y el hash
+            # se calcularía sobre una base a la que le faltan esos cambios.
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Ya integrados: fuera, para que no acaben en el ZIP de salida.
+        for sufijo in ("-wal", "-shm"):
+            ruta = os.path.join(workdir, f"{DB_NAME}{sufijo}")
+            if os.path.exists(ruta):
+                os.unlink(ruta)
+
+    def _merge(self, db_path: str, request: ExportRequest):
+        """Aplica el request en una única transacción."""
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("BEGIN")
+            counts = self.mapper.merge(conn, request)
+            conn.commit()
+            return counts, []
+        except sqlite3.Error as e:
+            conn.rollback()
+            return None, [f"No se pudo fusionar (revertido): {e}"]
+        finally:
+            conn.close()
+
+    def _build_manifest(self, zf: zipfile.ZipFile, db_path: str) -> dict:
+        """
+        Construye el manifest de salida.
+
+        Conserva el original como base para no perder campos que no
+        conozcamos, y actualiza los que JW Library valida.
+        """
+        manifest: dict = {}
+        if "manifest.json" in zf.namelist():
+            try:
+                manifest = json.loads(zf.read("manifest.json"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                manifest = {}
+
+        ahora = _now()
+        backup = dict(manifest.get("userDataBackup") or {})
+
+        # La tabla LastModified de la base tiene que decir lo mismo que el
+        # manifest, y schemaVersion sale del propio archivo.
+        conn = sqlite3.connect(db_path)
+        try:
+            # UPDATE, no DELETE+INSERT: el esquema trae un trigger que prohíbe
+            # borrar de LastModified ("DELETE FROM LastModified not allowed").
+            # La tabla tiene una única fila que los triggers del propio esquema
+            # van tocando en cada escritura; aquí solo la dejamos sincronizada
+            # con la fecha que anunciamos en el manifest.
+            conn.execute("UPDATE LastModified SET LastModified = ?", (ahora,))
+            conn.commit()
+            schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        finally:
+            conn.close()
+
+        backup.update(
+            {
+                "lastModifiedDate": ahora,
+                "databaseName": DB_NAME,
+                "schemaVersion": schema_version,
+                "deviceName": backup.get("deviceName") or "Study",
+                # El hash se calcula al final: cualquier escritura previa en la
+                # base (incluida la de LastModified) lo invalidaría.
+                "hash": self._sha256(db_path),
+            }
+        )
+
+        manifest.update(
+            {
+                "name": manifest.get("name") or "UserdataBackup_Study.jwlibrary",
+                "creationDate": ahora[:10],
+                "version": manifest.get("version", 1),
+                "type": manifest.get("type", 0),
+                "userDataBackup": backup,
+            }
+        )
+        return manifest
+
+    def _repackage(
+        self, zf: zipfile.ZipFile, db_path: str, manifest: dict
+    ) -> Tuple[Optional[bytes], list[str]]:
+        """Reempaqueta: base fusionada + manifest nuevo + el resto del original."""
+        errors: list[str] = []
+
+        total = 0
+        for item in zf.infolist():
+            if item.filename in _EXCLUIR or item.filename == "manifest.json":
+                continue
+            if item.file_size > MAX_ZIP_SIZE:
+                return None, [f"Entrada del ZIP demasiado grande: {item.filename}"]
+            total += item.file_size
+        if total > 4 * MAX_ZIP_SIZE:
+            return None, ["Tamaño descomprimido excesivo (posible zip bomb)"]
+
+        try:
+            with open(db_path, "rb") as f:
+                db_bytes = f.read()
+
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as out:
+                out.writestr(DB_NAME, db_bytes)
+                out.writestr(
+                    "manifest.json",
+                    json.dumps(manifest, indent=None, separators=(",", ":")),
+                )
+                for item in zf.infolist():
+                    if item.filename in _EXCLUIR or item.filename == "manifest.json":
+                        continue
+                    out.writestr(item, zf.read(item.filename))
+
+            return output.getvalue(), errors
+        except Exception as e:  # noqa: BLE001
+            return None, [f"No se pudo empaquetar el archivo: {e}"]
+
+    @staticmethod
+    def _sha256(path: str) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()

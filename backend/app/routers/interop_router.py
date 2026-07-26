@@ -3,7 +3,6 @@ Interop Router — endpoints para import/export de archivos .jwlibrary.
 
 POST /api/interop/import      — analiza un .jwlibrary subido
 POST /api/interop/export      — inyecta datos en un .jwlibrary y devuelve el ZIP
-POST /api/interop/export-new  — crea un .jwlibrary desde cero
 GET  /api/interop/schema      — devuelve el esquema SQL de userData.db
 
 Los archivos se suben como multipart/form-data.
@@ -122,43 +121,6 @@ async def export_jwlibrary(
         )
     except JWLibraryError as e:
         raise HTTPException(422, str(e))
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Export failed")
-        raise HTTPException(500, "Export failed")
-
-
-@router.post("/export-new")
-async def export_new_jwlibrary(request_json: str = Form(...)):
-    """
-    Crea un .jwlibrary desde cero (sin archivo original).
-
-    Útil para exportar datos sin tener un backup previo.
-    Crea un userData.db vacío, inyecta los datos, y empaqueta.
-    """
-    try:
-        request = ExportRequest.model_validate_json(request_json)
-    except Exception as e:
-        raise HTTPException(400, f"Invalid request JSON: {e}")
-
-    try:
-        result, zip_bytes = _writer.create_fresh_library(request)
-
-        if not result.success:
-            raise HTTPException(
-                500,
-                f"Export failed: {'; '.join(result.errors)}",
-            )
-
-        return StreamingResponse(
-            io.BytesIO(zip_bytes),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="study-export.jwlibrary"',
-                "X-Export-Result": _export_result_header(result),
-            },
-        )
     except HTTPException:
         raise
     except Exception:
