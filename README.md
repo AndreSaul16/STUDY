@@ -157,18 +157,42 @@ VITE_AI_API_BASE=http://localhost:8000
 
 ### IA: chat vs. análisis
 
-- **Chat** (`/api/chat/stream`) usa OpenAI real. Requiere `OPENAI_API_KEY` en `backend/.env`
-  (el SDK `openai` ya está en `requirements.txt`; no hace falta instalar nada aparte).
-- **Análisis** (`/api/ai/analyze`) usa por defecto `MockProvider` (no requiere API key).
-  Para usar OpenAI también aquí, edita `get_ai_service()` en
-  `backend/app/routers/ai_router.py`:
+Ambos usan OpenAI real **si hay `OPENAI_API_KEY`**; sin ella, el análisis cae al
+`MockProvider` para poder levantar el backend en local sin credenciales. La
+selección es automática (`_build_service()` en `ai_router.py`), no hay que
+tocar código.
 
-```python
-from ..services.ai.providers.openai_provider import OpenAIProvider
-_service = AIService(OpenAIProvider(ProviderConfig(model="gpt-4o")))
-```
+- **Chat** (`/api/chat/stream`) — conversacional, con herramientas.
+- **Análisis** (`/api/ai/analyze`) — las 7 skills sobre el texto que se está leyendo.
 
-El resto del sistema (router, orchestrator, optimizer, frontend) **no cambia**.
+#### `reasoning_effort`: dos restricciones reales de la API
+
+Con modelos de razonamiento (`gpt-5.x`, `o-series`), verificado contra la API:
+
+1. Sólo admite `none | low | medium | high | xhigh`. Otro valor (p. ej. `max`)
+   devuelve **400 y tumba el chat entero**. El backend valida y degrada a
+   `none` en vez de propagar el fallo.
+2. **Con `tools` sólo admite `none`.** Por eso las rondas de tool-calling van
+   siempre con `none` y el `OPENAI_REASONING_EFFORT` configurado se reserva
+   para la ronda final de redacción, que va sin herramientas.
+
+Los modelos clásicos (`gpt-4o-mini`) no aceptan el parámetro: deja la variable
+vacía. `OpenAIProvider` también adapta `max_tokens` → `max_completion_tokens` y
+omite `temperature`, que los de razonamiento rechazan.
+
+### Fuentes de contenido: nativas + MCP
+
+El contenido sale de `wol.jw.org` por dos vías **independientes**:
+
+| Vía | Idioma | Disponibilidad | Aporta |
+|-----|--------|----------------|--------|
+| Nativa (Python, `services/jw/`, `services/references/`) | Español | Siempre que haya red | Texto bíblico, búsqueda en la biblioteca, artículos, texto del día |
+| MCP (`jw-mcp`, subprocess Node) | Inglés | Si el binario está instalado | Notas de estudio, guía de actividades, subtítulos de vídeo |
+
+Las nativas son el suelo garantizado: si el MCP no arranca, el chat pierde
+calidad pero **sigue funcionando y respondiendo en español**. Antes dependía
+por completo del MCP, y en el contenedor de producción —donde no estaba
+instalado— se quedaba sin fuentes y no podía responder nada.
 
 ## Esquema de Base de Datos Local
 
@@ -265,16 +289,39 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | — | API key de OpenAI (opcional) |
-| `VITE_AI_API_BASE` | `http://localhost:8000` | URL del backend |
-| `MCP_SERVER_COMMAND` | `advenimus-jw-mcp` | Comando del servidor MCP |
+| `OPENAI_API_KEY` | — | API key de OpenAI. Sin ella, el análisis usa el proveedor mock |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Modelo a usar |
+| `OPENAI_MAX_TOKENS` | `2000` | Tope de tokens de respuesta |
+| `OPENAI_REASONING_EFFORT` | `none` | `none\|low\|medium\|high\|xhigh`. Vacío en modelos clásicos |
+| `JW_MCP_PATH` | `jw-mcp` | Ejecutable del MCP. Si la ruta absoluta no existe, cae al binario del `PATH` |
+| `VITE_AI_API_BASE` | origen de la página | URL del backend (en producción se sirve co-locado) |
+
+En producción, el `Dockerfile` instala Node + `jw-mcp` y fija
+`JW_MCP_PATH=jw-mcp`. Ojo: una variable definida en el servicio (Railway,
+etc.) **gana** sobre el `ENV` del Dockerfile.
+
+## Responsive
+
+Tres modos, no dos:
+
+| Ancho | Layout | Navegación |
+|-------|--------|------------|
+| `<768px` | Lector a pantalla completa | Barra inferior de 5 destinos + bottom sheet arrastrable |
+| `768–1149px` | Split 65/35 | Pestañas con scroll horizontal |
+| `≥1150px` | Split 60/40 | Pestañas con scroll horizontal |
+
+Detalles que importan: `viewport-fit=cover` + `env(safe-area-inset-*)` para el
+notch y la barra gestual, objetivos táctiles de 44px, tipografía fluida con
+`clamp()` (nunca por debajo de 16px en campos, para que iOS no haga zoom), y
+`prefers-reduced-motion` anulando **duración y retardo** de las animaciones.
 
 ## Atajos de Teclado
 
 | Atajo | Acción |
 |-------|--------|
 | `⌘K` / `Ctrl+K` | Abrir búsqueda interna |
-| `Esc` | Cerrar menú contextual / búsqueda |
+| `←` / `→` | Capítulo anterior / siguiente (leyendo la Biblia) |
+| `Esc` | Cerrar menú contextual / búsqueda / panel |
 | `⌘+Enter` | Guardar nota (en editor) |
 
 ## Licencia

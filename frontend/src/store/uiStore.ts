@@ -24,7 +24,10 @@ export const useUIStore = create<UIState>()(
   persist(
     (set) => ({
       theme: THEMES.LIGHT,
-      activeTab: RESEARCH_TABS.REFERENCE,
+      // Biblia y no Referencia: al abrir la app no hay ninguna referencia
+      // activa, así que el panel arrancaba en un estado vacío. El índice
+      // bíblico es accionable desde el primer segundo.
+      activeTab: RESEARCH_TABS.BIBLE,
       mobileSheetOpen: false,
       searchOpen: false,
 

@@ -95,10 +95,14 @@ async def chat_health():
 
 @router.get("/tools")
 async def list_tools():
-    """Lista las herramientas MCP disponibles para el chat."""
+    """Lista todas las herramientas del chat (nativas + MCP)."""
     try:
         service = get_chat_service()
         await service.ensure_tools()
-        return {"tools": service.mcp_tools}
+        return {
+            "tools": service.tools,
+            "native_count": len(service.tools) - len(service.mcp_tools),
+            "mcp_count": len(service.mcp_tools),
+        }
     except ValueError as e:
         raise HTTPException(503, str(e))

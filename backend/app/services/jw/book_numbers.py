@@ -60,6 +60,23 @@ for _alias, _num in _ALIASES.items():
     _NAME_TO_NUMBER[_normalize(_alias)] = _num
 
 
+# Número de capítulos por libro (índice = número de libro). Constante del
+# canon, así que vive aquí en vez de costar una petición a WOL: el navegador
+# de la Biblia necesita pintar la rejilla de capítulos al instante.
+_CHAPTER_COUNTS: dict[int, int] = {
+    1: 50, 2: 40, 3: 27, 4: 36, 5: 34, 6: 24, 7: 21, 8: 4, 9: 31, 10: 24,
+    11: 22, 12: 25, 13: 29, 14: 36, 15: 10, 16: 13, 17: 10, 18: 42, 19: 150,
+    20: 31, 21: 12, 22: 8, 23: 66, 24: 52, 25: 5, 26: 48, 27: 12, 28: 14,
+    29: 3, 30: 9, 31: 1, 32: 4, 33: 7, 34: 3, 35: 3, 36: 3, 37: 2, 38: 14,
+    39: 4, 40: 28, 41: 16, 42: 24, 43: 21, 44: 28, 45: 16, 46: 16, 47: 13,
+    48: 6, 49: 6, 50: 4, 51: 4, 52: 5, 53: 3, 54: 6, 55: 4, 56: 3, 57: 1,
+    58: 13, 59: 5, 60: 5, 61: 3, 62: 5, 63: 1, 64: 1, 65: 1, 66: 22,
+}
+
+# Los 39 primeros libros son las Escrituras Hebreas; el resto, las Griegas.
+_HEBREW_SCRIPTURES_LAST = 39
+
+
 def book_number(name: str) -> int | None:
     """Devuelve el número (1-66) del libro dado su nombre en español, o None."""
     if not name:
@@ -70,3 +87,27 @@ def book_number(name: str) -> int | None:
 def book_display_name(number: int) -> str:
     """Nombre de presentación en español para un número de libro (1-66)."""
     return _NUMBER_TO_NAME.get(number, f"Libro {number}")
+
+
+def chapter_count(number: int) -> int:
+    """Número de capítulos del libro (0 si el número no es válido)."""
+    return _CHAPTER_COUNTS.get(number, 0)
+
+
+def all_books() -> list[dict]:
+    """
+    Catálogo completo de los 66 libros para el navegador de la Biblia.
+
+    Cada entrada: número, nombre, capítulos y sección ("hebreas"/"griegas").
+    """
+    return [
+        {
+            "number": number,
+            "name": name,
+            "chapters": _CHAPTER_COUNTS.get(number, 0),
+            "section": (
+                "hebreas" if number <= _HEBREW_SCRIPTURES_LAST else "griegas"
+            ),
+        }
+        for number, name in sorted(_NUMBER_TO_NAME.items())
+    ]

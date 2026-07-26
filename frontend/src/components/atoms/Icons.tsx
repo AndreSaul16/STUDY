@@ -200,6 +200,41 @@ export function IconGrip(p: IconProps) {
   );
 }
 
+export function IconHome(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" />
+    </svg>
+  );
+}
+
+export function IconSparkle(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M12 3.5 13.7 9l5.5 1.7-5.5 1.7L12 18l-1.7-5.6L4.8 10.7 10.3 9z" />
+      <path d="M18.5 3.5v3M20 5h-3" />
+    </svg>
+  );
+}
+
+export function IconChat(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M20 12a7 7 0 0 1-7 7H8l-4 3v-4.6A7 7 0 0 1 11 5h2a7 7 0 0 1 7 7z" />
+    </svg>
+  );
+}
+
+export function IconLayers(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="m12 3 8 4.5-8 4.5-8-4.5z" />
+      <path d="m4 12 8 4.5 8-4.5" />
+      <path d="m4 16.5 8 4.5 8-4.5" />
+    </svg>
+  );
+}
+
 /** Mapa de iconos por tipo de referencia — para ReferenceCard */
 export const REFERENCE_ICONS = {
   scripture: IconBook,

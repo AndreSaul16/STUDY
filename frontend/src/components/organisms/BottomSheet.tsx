@@ -1,69 +1,154 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/utils/cn";
 import { useUIStore } from "@/store/uiStore";
+import { usePrefersReducedMotion } from "@/hooks/useMediaQuery";
 import { IconClose, IconGrip } from "@/components/atoms/Icons";
 import { ResearchPanel } from "@/components/organisms/ResearchPanel";
 
 /**
- * BottomSheet — panel inferior deslizante para móvil.
- * Aparece con animación sheet-up, overlay sutil, y un grip handle.
- * Contiene el ResearchPanel completo.
+ * BottomSheet — panel de investigación en móvil.
+ *
+ * Se puede arrastrar por el asa: bajar lo cierra, subir lo lleva a pantalla
+ * casi completa. Es el gesto que la gente ya espera de una hoja inferior, y
+ * aquí importa porque el chat y el buscador se usan largo rato y 85 % de alto
+ * fijo se queda corto en cuanto sale el teclado.
+ *
+ * Sólo se arrastra desde el asa, no desde el cuerpo: si no, el gesto pelearía
+ * con el scroll de la lista de resultados.
  */
+
+/** Altura de reposo, como fracción del alto de la ventana. */
+const REST_HEIGHT = 0.85;
+/** Arrastre hacia abajo, en px, a partir del cual se cierra al soltar. */
+const CLOSE_THRESHOLD = 120;
+/** Alto de la barra de navegación inferior, que queda por encima de la hoja. */
+const NAV_HEIGHT = "calc(3.5rem + env(safe-area-inset-bottom))";
+
 export function BottomSheet() {
   const open = useUIStore((s) => s.mobileSheetOpen);
   const setOpen = useUIStore((s) => s.setMobileSheetOpen);
+  const reducedMotion = usePrefersReducedMotion();
 
-  // Lock scroll del body cuando está abierto
+  const [dragOffset, setDragOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const startYRef = useRef(0);
+
+  // Bloquear el scroll del fondo mientras la hoja está abierta.
   useEffect(() => {
-    if (open) {
-      document.body.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = "";
-      };
+    if (!open) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [open]);
+
+  // Esc cierra, como cualquier diálogo.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, setOpen]);
+
+  // Al cerrar, olvidar el arrastre para que la próxima apertura salga limpia.
+  useEffect(() => {
+    if (!open) {
+      setDragOffset(0);
+      setDragging(false);
     }
   }, [open]);
+
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    startYRef.current = e.clientY;
+    setDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dragging) return;
+      const delta = e.clientY - startYRef.current;
+      // Arriba se puede estirar un poco (con resistencia); abajo, libre.
+      setDragOffset(delta < 0 ? Math.max(delta, -80) / 2 : delta);
+    },
+    [dragging],
+  );
+
+  const endDrag = useCallback(() => {
+    if (!dragging) return;
+    setDragging(false);
+    if (dragOffset > CLOSE_THRESHOLD) {
+      setOpen(false);
+      return;
+    }
+    setDragOffset(0);
+  }, [dragging, dragOffset, setOpen]);
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[90] md:hidden">
-      {/* Overlay */}
+    <div className="fixed inset-0 z-[110] md:hidden">
       <div
         className="absolute inset-0 bg-ink-400/40 backdrop-blur-[2px]"
         onClick={() => setOpen(false)}
         aria-hidden
       />
 
-      {/* Sheet */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Panel de investigación"
+        style={{
+          // Se apoya justo encima de la barra de navegación, que permanece
+          // visible y pulsable mientras la hoja está abierta.
+          bottom: NAV_HEIGHT,
+          height: `calc(${REST_HEIGHT * 100}dvh - ${NAV_HEIGHT})`,
+          transform: `translateY(${Math.max(dragOffset, 0)}px)`,
+          // Durante el arrastre no hay transición: el panel debe seguir al dedo.
+          transition: dragging ? "none" : "transform 0.28s var(--ease-out-expo)",
+        }}
         className={cn(
-          "absolute inset-x-0 bottom-0",
-          "h-[85vh] rounded-t-2xl",
+          "absolute inset-x-0",
+          "rounded-t-2xl",
           "bg-paper-50 dark:bg-ink-100",
           "shadow-[0_-12px_40px_-12px_rgba(0,0,0,0.3)]",
-          "animate-sheet-up",
-          "flex flex-col",
+          !reducedMotion && !dragging && "animate-sheet-up",
+          "flex flex-col overflow-hidden",
         )}
       >
-        {/* Grip + close */}
-        <div className="flex shrink-0 items-center justify-between px-4 pt-2 pb-1">
-          <div className="mx-auto flex h-8 w-12 items-center justify-center">
-            <IconGrip width={24} height={24} className="text-muted-light dark:text-muted-dark" />
-          </div>
+        {/* Asa de arrastre */}
+        <div
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          className={cn(
+            "relative flex shrink-0 items-center justify-center",
+            "h-11 cursor-grab touch-none active:cursor-grabbing",
+          )}
+        >
+          <IconGrip
+            width={24}
+            height={24}
+            className="text-muted-light dark:text-muted-dark"
+          />
           <button
             onClick={() => setOpen(false)}
             aria-label="Cerrar panel"
-            className="absolute right-3 top-2 flex h-8 w-8 items-center justify-center rounded-full text-muted-light hover:bg-paper-200 dark:text-muted-dark dark:hover:bg-ink-50"
+            className={cn(
+              "absolute right-2 top-1.5 flex h-9 w-9 items-center justify-center rounded-full",
+              "text-muted-light hover:bg-paper-200",
+              "dark:text-muted-dark dark:hover:bg-ink-50",
+            )}
           >
             <IconClose width={16} height={16} />
           </button>
         </div>
 
-        {/* Contenido */}
-        <div className="flex-1 overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <ResearchPanel className="h-full" />
         </div>
       </div>

@@ -1,14 +1,14 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { cn } from "@/utils/cn";
 import { useLibraryStore } from "@/store/libraryStore";
-import { useReaderStore } from "@/store/readerStore";
+import { useUIStore } from "@/store/uiStore";
 import { jwpubClient } from "@/services/jwpubClient";
-import { jwpubDocumentToArticle } from "@/utils/htmlToBlocks";
+import { listPublications, savePublication } from "@/services/libraryCache";
+import { openJwpubDocument } from "@/services/readerActions";
 import { Button } from "@/components/atoms/Button";
 import { Badge } from "@/components/atoms/Badge";
 import { Divider } from "@/components/atoms/Divider";
 import { IconBook } from "@/components/atoms/Icons";
-import { DailyTextCard } from "@/components/organisms/DailyTextCard";
 
 interface LibraryPanelProps {
   className?: string;
@@ -36,10 +36,33 @@ export function LibraryPanel({ className }: LibraryPanelProps) {
   const documents = useLibraryStore((s) => s.documents);
   const toc = useLibraryStore((s) => s.toc);
   const loadPublication = useLibraryStore((s) => s.loadPublication);
-  const setActiveDocument = useLibraryStore((s) => s.setActiveDocument);
   const activeDocumentIndex = useLibraryStore((s) => s.activeDocumentIndex);
+  const setMobileSheetOpen = useUIStore((s) => s.setMobileSheetOpen);
 
-  const setArticle = useReaderStore((s) => s.setArticle);
+  /**
+   * Al montar, restaurar la última publicación desde la biblioteca local.
+   *
+   * Vive en IndexedDB, no en el backend: así sigue ahí después de refrescar,
+   * de cerrar el navegador y de cualquier redespliegue del servidor.
+   */
+  useEffect(() => {
+    if (activePublication) return;
+
+    let cancelled = false;
+    listPublications()
+      .then((stored) => {
+        const latest = stored[0];
+        if (!latest || cancelled) return;
+        loadPublication(latest.publication, latest.documents, latest.toc);
+      })
+      .catch(() => {
+        // Sin biblioteca guardada: el estado vacío ya lo explica.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activePublication, loadPublication]);
 
   const handleUpload = async (file: File) => {
     setBusy(true);
@@ -53,34 +76,28 @@ export function LibraryPanel({ className }: LibraryPanelProps) {
         documentCount: result.documentCount,
       });
 
-      // Cargar automáticamente la publicación
       loadPublication(result.publication, result.documents, result.toc);
+      // Guardarla en el navegador para que siga estando en la próxima visita.
+      await savePublication(result.publication, result.documents, result.toc);
 
-      // Cargar el primer documento en el reader
       if (result.documents.length > 0) {
-        const article = jwpubDocumentToArticle(result.documents[0]!, result.publication.symbol);
-        setArticle(article);
+        await openJwpubDocument(0, result.publication.symbol);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Upload failed");
+      setError(e instanceof Error ? e.message : "No se pudo subir el archivo");
     } finally {
       setBusy(false);
     }
   };
 
   const handleSelectDocument = (index: number) => {
-    const doc = documents[index];
-    if (!doc) return;
-    setActiveDocument(index);
-    const article = jwpubDocumentToArticle(doc, activePublication?.symbol);
-    setArticle(article);
+    if (index < 0) return;
+    void openJwpubDocument(index, activePublication?.symbol);
+    setMobileSheetOpen(false);
   };
 
   return (
     <div className={cn("flex h-full flex-col overflow-y-auto p-4", className)}>
-      {/* Widget de inicio: texto del día (Examinemos las Escrituras) */}
-      <DailyTextCard className="mb-4" />
-
       <div className="mb-4">
         <h3 className="font-display text-xl text-reading-light dark:text-reading-dark">
           Biblioteca

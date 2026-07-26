@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/utils/cn";
-import { useChat } from "@/hooks/useChat";
+import { useChat, TOOL_LABELS, type ToolActivity } from "@/hooks/useChat";
 import { Button } from "@/components/atoms/Button";
 import { Divider } from "@/components/atoms/Divider";
 import { Markdown } from "@/components/atoms/Markdown";
@@ -24,6 +24,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
     messages,
     isStreaming,
     streamingContent,
+    activity,
     error,
     send,
     cancel,
@@ -39,7 +40,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, activity]);
 
   const handleSend = () => {
     if (!input.trim() || isStreaming) return;
@@ -92,7 +93,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
       <Divider />
 
       {/* ─── Mensajes ─── */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-4">
         {messages.length === 0 && !isStreaming && !error && (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-paper-200 text-muted-light dark:bg-ink-50 dark:text-muted-dark">
@@ -109,6 +110,11 @@ export function ChatPanel({ className }: ChatPanelProps) {
         {messages.map((msg, i) => (
           <MessageBubble key={i} role={msg.role} content={msg.content} />
         ))}
+
+        {/* Consultas a fuentes en curso — antes de que llegue el primer token */}
+        {isStreaming && !streamingContent && (
+          <ToolActivityTrail activity={activity} />
+        )}
 
         {/* Streaming en curso */}
         {isStreaming && streamingContent && (
@@ -128,7 +134,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
       <Divider />
 
       {/* ─── Input ─── */}
-      <div className="shrink-0 p-3">
+      <div className="shrink-0 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}
@@ -139,9 +145,11 @@ export function ChatPanel({ className }: ChatPanelProps) {
             rows={1}
             disabled={isStreaming}
             className={cn(
-              "min-h-[40px] max-h-[120px] flex-1 resize-none",
-              "rounded-lg bg-paper-50 px-3 py-2",
-              "font-ui text-sm text-reading-light",
+              "min-h-[44px] max-h-[120px] flex-1 resize-none",
+              "rounded-lg bg-paper-50 px-3 py-2.5",
+              // 16px exactos: por debajo, iOS hace zoom al enfocar el campo y
+              // deja la vista descuadrada al volver.
+              "font-ui text-base text-reading-light sm:text-sm",
               "placeholder:text-muted-light/60",
               "ring-1 ring-seam-light focus:outline-none focus:ring-2 focus:ring-amber-500",
               "dark:bg-ink-50 dark:text-reading-dark dark:ring-seam-dark dark:placeholder:text-muted-dark/60 dark:focus:ring-amber-400",
@@ -181,6 +189,60 @@ export function ChatPanel({ className }: ChatPanelProps) {
   );
 }
 
+// ─── Rastro de consultas a fuentes ───────────────────────────────
+
+/**
+ * Lo que la IA está haciendo mientras no hay texto que mostrar.
+ *
+ * El asistente consulta wol.jw.org en varias rondas antes de redactar, y eso
+ * puede llevar entre 20 y 60 segundos. Sin este rastro el panel se queda vacío
+ * todo ese rato y no se distingue de una app colgada.
+ */
+function ToolActivityTrail({ activity }: { activity: ToolActivity[] }) {
+  const last = activity[activity.length - 1];
+
+  return (
+    <div className="mb-3 flex justify-start" aria-live="polite">
+      <div className="max-w-[88%] rounded-2xl bg-paper-100 px-4 py-3 dark:bg-ink-50">
+        <div className="flex items-center gap-2">
+          <span className="flex gap-1" aria-hidden>
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-600 dark:bg-amber-500"
+                style={{ animationDelay: `${i * 180}ms` }}
+              />
+            ))}
+          </span>
+          <span className="font-ui text-xs font-medium text-reading-light dark:text-reading-dark">
+            {last ? (TOOL_LABELS[last.name] ?? "Consultando fuentes") : "Buscando en wol.jw.org"}
+            {last?.detail ? ` · ${last.detail}` : ""}
+          </span>
+        </div>
+
+        {/* Las consultas ya resueltas quedan listadas: dan la sensación de
+            avance y explican de dónde saldrá la respuesta. */}
+        {activity.length > 1 && (
+          <ul className="mt-2 space-y-1 border-t border-seam-light pt-2 dark:border-seam-dark">
+            {activity.slice(0, -1).map((step, i) => (
+              <li
+                key={i}
+                className="flex items-start gap-1.5 font-ui text-[11px] text-muted-light dark:text-muted-dark"
+              >
+                <span className="mt-0.5 text-amber-700 dark:text-amber-500">✓</span>
+                <span className="min-w-0 break-words">
+                  {TOOL_LABELS[step.name] ?? step.name}
+                  {step.detail ? ` · ${step.detail}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Message Bubble ──────────────────────────────────────────────
 
 function MessageBubble({
@@ -203,7 +265,9 @@ function MessageBubble({
     >
       <div
         className={cn(
-          "max-w-[85%] rounded-2xl px-4 py-2.5",
+          "max-w-[88%] rounded-2xl px-4 py-2.5 sm:max-w-[85%]",
+          // Un enlace o una palabra larga no deben ensanchar la burbuja.
+          "min-w-0 break-words",
           isUser
             ? "bg-amber-600 text-paper-50 dark:bg-amber-500"
             : "bg-paper-100 text-reading-light dark:bg-ink-50 dark:text-reading-dark",

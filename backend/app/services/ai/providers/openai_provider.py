@@ -14,9 +14,43 @@ El resto del sistema (router, orchestrator, optimizer, frontend) NO cambia.
 """
 
 import os
-from typing import AsyncIterator, Optional
+import re
+from typing import Any, AsyncIterator, Dict, Optional
 
 from .base import AIEngineProvider, ProviderConfig, TokenChunk
+
+# Familias de modelos de razonamiento (gpt-5.x, o1/o3/o4). Rechazan
+# `max_tokens` (exigen `max_completion_tokens`) y sólo admiten temperature=1.
+# Verificado contra la API: pasarles los parámetros clásicos devuelve 400.
+_REASONING_MODEL_RE = re.compile(r"^(gpt-5|o[1-9])", re.IGNORECASE)
+
+_VALID_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
+
+
+def _is_reasoning_model(model: str) -> bool:
+    return bool(_REASONING_MODEL_RE.match(model or ""))
+
+
+def _build_params(config: ProviderConfig) -> Dict[str, Any]:
+    """
+    Traduce un ProviderConfig a los parámetros que acepta el modelo concreto.
+
+    Aísla aquí la divergencia entre familias para que el AIService siga sin
+    saber nada del SDK ni de qué modelo hay detrás.
+    """
+    if not _is_reasoning_model(config.model):
+        return {
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens,
+        }
+
+    params: Dict[str, Any] = {"max_completion_tokens": config.max_tokens}
+
+    effort = (os.getenv("OPENAI_REASONING_EFFORT", "") or "").strip().lower()
+    if effort in _VALID_EFFORTS:
+        params["reasoning_effort"] = effort
+
+    return params
 
 
 class OpenAIProvider(AIEngineProvider):
@@ -74,9 +108,8 @@ class OpenAIProvider(AIEngineProvider):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
             stream=True,
+            **_build_params(config),
         )
 
         async for chunk in stream:
@@ -100,9 +133,8 @@ class OpenAIProvider(AIEngineProvider):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
             stream=False,
+            **_build_params(config),
         )
 
         return response.choices[0].message.content or ""

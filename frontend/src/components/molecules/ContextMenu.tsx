@@ -40,7 +40,9 @@ export function ContextMenu({
   // el menú se queda flotando en la posición vieja — aceptable para v1.
   // Para v2: escuchar scroll y re-posicionar o cerrar.
   const rect = selection.rect;
-  const menuWidth = 280;
+  // En pantallas estrechas el menú se ajusta al ancho disponible en vez de
+  // quedarse fijo en 280px y salirse por el borde.
+  const menuWidth = Math.min(288, window.innerWidth - 24);
   const menuHeight = 56;
 
   let x = rect.left + rect.width / 2 - menuWidth / 2;
@@ -55,19 +57,28 @@ export function ContextMenu({
     y = Math.max(12, (window.innerHeight - menuHeight) / 2);
   }
 
-  // Cerrar al click fuera o Escape
+  // Cerrar al pulsar fuera, con Escape, o al hacer scroll.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    const onDown = (e: MouseEvent) => {
+    // pointerdown y no mousedown: en táctil el mousedown sintético llega
+    // tarde (tras el touchend) y el menú se quedaba un instante colgado.
+    const onDown = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
+    // El menú se posiciona con coordenadas del viewport tomadas al abrirlo;
+    // si se hace scroll, esa posición deja de corresponder a la selección.
+    // Cerrarlo es más honesto que dejarlo flotando en un sitio equivocado.
+    const onScroll = () => onClose();
+
     document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("scroll", onScroll, { capture: true, passive: true });
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("scroll", onScroll, { capture: true });
     };
   }, [onClose]);
 
@@ -96,9 +107,10 @@ export function ContextMenu({
               onClose();
             }}
             className={cn(
-              "h-6 w-6 rounded-full transition-transform",
-              "hover:scale-125 active:scale-110",
+              "h-7 w-7 rounded-full transition-transform",
+              "hover:scale-110 active:scale-95",
               "ring-1 ring-black/10 dark:ring-white/10",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-paper-50",
               s.bg,
             )}
           />

@@ -1,7 +1,6 @@
 import type { ReferenceParser, ReferenceResolver, ReferenceType } from "@/types/reference";
 import { ScriptureParser } from "@/engine/parsers/ScriptureParser";
 import { PublicationParser } from "@/engine/parsers/PublicationParser";
-import { FootnoteParser } from "@/engine/parsers/FootnoteParser";
 import { CrossRefParser } from "@/engine/parsers/CrossRefParser";
 import { ScriptureResolver } from "@/engine/resolvers/ScriptureResolver";
 import { PublicationResolver } from "@/engine/resolvers/PublicationResolver";
@@ -82,10 +81,13 @@ export function createDefaultRegistry(): ReferenceRegistry {
     "publication" as ReferenceType,
     new PublicationParser(),
   );
-  registry.registerParser(
-    "footnote" as ReferenceType,
-    new FootnoteParser(),
-  );
+  // FootnoteParser NO se registra a propósito. Detectaba "[1]", "nota 3" y
+  // los asteriscos del texto bíblico y los convertía en enlaces que siempre
+  // acababan en "contenido no disponible": el cuerpo de la nota no está en lo
+  // que servimos (WOL las carga aparte por AJAX y el .jwpub las guarda en
+  // tablas que el lector todavía no extrae). Mejor no pintar el enlace que
+  // pintar uno muerto. El parser y su resolver siguen disponibles para
+  // registrarlos en cuanto una fuente traiga las notas.
   registry.registerParser(
     "cross_reference" as ReferenceType,
     new CrossRefParser(),

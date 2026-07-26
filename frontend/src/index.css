@@ -74,6 +74,28 @@
     color: var(--color-reading-light);
     transition: background-color 0.4s var(--ease-out-expo),
       color 0.4s var(--ease-out-expo);
+    /* iOS rebota el documento entero al hacer scroll dentro de un panel; con
+       la app a pantalla completa eso despega el layout de los bordes. */
+    overscroll-behavior-y: none;
+  }
+
+  /* Respetar «reducir movimiento»: las animaciones de entrada son decorativas
+     y para quien marca esa preferencia resultan mareantes. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      /* El retardo también, no sólo la duración: los bloques del lector entran
+         escalonados con animation-delay y fill-mode "both", así que sin esto
+         el texto se queda invisible durante el retardo aunque la animación
+         dure 0. Anular la duración y dejar el retardo = pantalla en blanco. */
+      animation-delay: 0ms !important;
+      transition-duration: 0.01ms !important;
+      transition-delay: 0ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   .dark body {
@@ -221,6 +243,10 @@
   .prose-reading {
     font-family: var(--font-reading);
     font-optical-sizing: auto;
+    /* Tipografía fluida: 16px en un móvil de 320px, 18px a partir de tablet.
+       Por debajo de 16px iOS hace zoom automático al enfocar un input, y para
+       leer un rato seguido 18px es bastante más cómodo. */
+    font-size: clamp(1rem, 0.94rem + 0.3vw, 1.125rem);
     line-height: 1.75;
     font-weight: 380;
     letter-spacing: -0.003em;

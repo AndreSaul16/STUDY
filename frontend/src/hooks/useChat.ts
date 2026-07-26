@@ -9,14 +9,60 @@ interface ChatMessage {
   content: string;
 }
 
+/** Una consulta a fuentes en curso, para poder enseñarla mientras pasa. */
+export interface ToolActivity {
+  name: string;
+  detail: string;
+}
+
 interface UseChatReturn {
   messages: ChatMessage[];
   isStreaming: boolean;
   streamingContent: string;
+  /** Herramientas consultadas en el turno actual, en orden. */
+  activity: ToolActivity[];
   error: string | null;
   send: (content: string) => void;
   cancel: () => void;
   clear: () => void;
+}
+
+/**
+ * Nombre técnico de la herramienta → qué contarle al usuario.
+ *
+ * Antes de responder, el modelo puede encadenar varias rondas de búsqueda y
+ * tardar medio minuto largo. Sin esto el panel se queda en blanco todo ese
+ * rato y parece que la app se ha colgado.
+ */
+export const TOOL_LABELS: Record<string, string> = {
+  leer_pasaje_biblico: "Leyendo el pasaje bíblico",
+  buscar_en_biblioteca: "Buscando en la Biblioteca en Línea",
+  abrir_documento: "Leyendo el artículo",
+  obtener_texto_del_dia: "Consultando el texto del día",
+  get_verse_with_study: "Consultando notas de estudio",
+  getWatchtowerContent: "Leyendo La Atalaya",
+  getWatchtowerLinks: "Buscando en La Atalaya",
+  getWorkbookContent: "Consultando la guía de actividades",
+  getWorkbookLinks: "Buscando en la guía de actividades",
+  get_jw_captions: "Revisando subtítulos de vídeo",
+  get_bible_verse: "Leyendo el versículo",
+  search_bible_books: "Buscando el libro bíblico",
+};
+
+/** Extrae el argumento más informativo para acompañar a la etiqueta. */
+function describeArgs(args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const a = args as Record<string, unknown>;
+
+  if (typeof a.consulta === "string") return a.consulta;
+  if (typeof a.query === "string") return a.query;
+  if (typeof a.libro === "string") {
+    return [a.libro, a.capitulo, a.versiculo && a.versiculo !== "all" ? `:${a.versiculo}` : ""]
+      .filter(Boolean)
+      .join(" ")
+      .replace(" :", ":");
+  }
+  return "";
 }
 
 /**
@@ -29,6 +75,7 @@ export function useChat(): UseChatReturn {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingContent, setStreamingContent] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [activity, setActivity] = useState<ToolActivity[]>([]);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
@@ -56,6 +103,7 @@ export function useChat(): UseChatReturn {
       // Preparar stream
       setIsStreaming(true);
       setStreamingContent("");
+      setActivity([]);
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -104,6 +152,18 @@ export function useChat(): UseChatReturn {
             if (!parsed) continue;
 
             switch (parsed.event) {
+              case "tool_call": {
+                const name = String(parsed.data.name ?? "");
+                if (!mountedRef.current || !name) break;
+                setActivity((prev) => [
+                  ...prev,
+                  {
+                    name,
+                    detail: describeArgs(parsed.data.arguments),
+                  },
+                ]);
+                break;
+              }
               case "token":
                 fullContent += String(parsed.data.text ?? "");
                 if (mountedRef.current) setStreamingContent(fullContent);
@@ -144,6 +204,7 @@ export function useChat(): UseChatReturn {
         if (mountedRef.current) {
           setIsStreaming(false);
           setStreamingContent("");
+          setActivity([]);
         }
         if (abortRef.current === controller) {
           abortRef.current = null;
@@ -160,6 +221,7 @@ export function useChat(): UseChatReturn {
   const clear = useCallback(() => {
     setMessages([]);
     setStreamingContent("");
+    setActivity([]);
     setError(null);
   }, []);
 
@@ -167,6 +229,7 @@ export function useChat(): UseChatReturn {
     messages,
     isStreaming,
     streamingContent,
+    activity,
     error,
     send,
     cancel,

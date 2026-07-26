@@ -23,31 +23,42 @@ El cliente puede cancelar cerrando la conexión (el generator se detiene).
 
 import json
 import logging
+import os
+
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from ..schemas.ai_schemas import AIRequest
 from ..services.ai import AIService
 from ..services.ai.providers import MockProvider, ProviderConfig
+from ..services.ai.providers.openai_provider import OpenAIProvider
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 # ─── Singleton del AIService ─────────────────────────────────────
-# En producción, inyectar via dependency injection con el provider
-# configurado según variables de entorno.
 
 _service: AIService | None = None
 
+_PLACEHOLDER_KEYS = {"", "sk-your-api-key-here"}
 
-def get_ai_service() -> AIService:
-    """Devuelve el singleton del AIService con el provider configurado."""
-    global _service
-    if _service is None:
-        # Por defecto, MockProvider (no requiere API key)
-        # Para usar OpenAI: from ..services.ai.providers.openai_provider import OpenAIProvider
-        #   _service = AIService(OpenAIProvider(ProviderConfig(model="gpt-4o")))
-        _service = AIService(
+
+def _build_service() -> AIService:
+    """
+    Construye el AIService con el provider que toque según el entorno.
+
+    Con OPENAI_API_KEY → OpenAI real (las 7 skills analizan de verdad).
+    Sin ella → MockProvider, para poder levantar el backend en local sin
+    credenciales. Antes esto estaba cableado a mock siempre, así que la
+    pestaña «IA» devolvía texto inventado también en producción.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+
+    if api_key in _PLACEHOLDER_KEYS:
+        logger.warning(
+            "OPENAI_API_KEY no configurada — el análisis con IA usará el proveedor mock."
+        )
+        return AIService(
             provider=MockProvider(),
             default_config=ProviderConfig(
                 model="mock-study-v1",
@@ -55,6 +66,23 @@ def get_ai_service() -> AIService:
                 max_tokens=2000,
             ),
         )
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+    config = ProviderConfig(
+        model=model,
+        api_key=api_key,
+        temperature=0.7,
+        max_tokens=int(os.getenv("OPENAI_MAX_TOKENS", "2000")),
+    )
+    logger.info("Análisis con IA usando OpenAI (modelo %s)", model)
+    return AIService(provider=OpenAIProvider(config), default_config=config)
+
+
+def get_ai_service() -> AIService:
+    """Devuelve el singleton del AIService con el provider configurado."""
+    global _service
+    if _service is None:
+        _service = _build_service()
     return _service
 
 

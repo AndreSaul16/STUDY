@@ -83,6 +83,88 @@ export function BlockRenderer({
     );
   }
 
+  if (block.blockType === BLOCK_TYPES.HEADING) {
+    return (
+      <h3
+        data-block-id={block.blockId}
+        className={cn(
+          "mt-8 font-ui text-sm font-semibold uppercase tracking-[0.12em]",
+          "text-amber-800 dark:text-amber-400",
+        )}
+      >
+        {block.content}
+      </h3>
+    );
+  }
+
+  // Texto temático de un artículo: la cita que lo encabeza.
+  if (block.blockType === BLOCK_TYPES.SCRIPTURE) {
+    return (
+      <blockquote
+        data-block-id={block.blockId}
+        className={cn(
+          "border-l-2 border-amber-600 pl-4",
+          "font-reading text-lg italic leading-relaxed",
+          "text-reading-light dark:text-reading-dark",
+        )}
+      >
+        <RenderedText
+          content={block.content}
+          detected={detected}
+          annotations={annotations}
+          onOpenReference={openReference}
+        />
+      </blockquote>
+    );
+  }
+
+  // Pregunta de estudio: se lee distinto del cuerpo, así que se ve distinto.
+  if (block.blockType === BLOCK_TYPES.QUESTION) {
+    return (
+      <p
+        data-block-id={block.blockId}
+        className={cn(
+          "rounded-md bg-paper-200/60 px-4 py-2.5 dark:bg-ink-50/60",
+          "font-ui text-sm font-medium leading-relaxed",
+          "text-reading-light/90 dark:text-reading-dark/90",
+        )}
+      >
+        {block.content}
+      </p>
+    );
+  }
+
+  if (block.blockType === BLOCK_TYPES.CAPTION) {
+    return (
+      <p
+        data-block-id={block.blockId}
+        className="font-ui text-xs italic leading-relaxed text-muted-light dark:text-muted-dark"
+      >
+        {block.content}
+      </p>
+    );
+  }
+
+  // Versículo bíblico: número volado + texto, como en una Biblia impresa.
+  if (block.blockType === BLOCK_TYPES.VERSE) {
+    return (
+      <p
+        data-block-id={block.blockId}
+        className="prose-reading text-reading-light dark:text-reading-dark"
+      >
+        <sup className="mr-1 select-none font-ui text-[10px] font-semibold tabular-nums text-amber-700 dark:text-amber-500">
+          {block.blockId}
+        </sup>
+        <RenderedText
+          content={block.content}
+          detected={detected}
+          annotations={annotations}
+          onOpenReference={openReference}
+        />
+      </p>
+    );
+  }
+
   if (block.blockType === BLOCK_TYPES.IMAGE) {
     const match = block.content.match(/^!\[(.*?)\]\((.*?)\)$/);
     const alt = match?.[1] ?? "";

@@ -15,6 +15,15 @@ export const BLOCK_TYPES = {
   TITLE: "title",
   REFERENCE: "reference",
   IMAGE: "image",
+  // Tipos que emiten las fuentes de wol.jw.org y el lector bíblico. Se
+  // renderizan distinto (pregunta de estudio, subtítulo, versículo…) para que
+  // un artículo de La Atalaya se lea como en la publicación y no como un
+  // muro de párrafos iguales.
+  HEADING: "heading",
+  QUESTION: "question",
+  SCRIPTURE: "scripture",
+  CAPTION: "caption",
+  VERSE: "verse",
 } as const;
 
 export type BlockType = (typeof BLOCK_TYPES)[keyof typeof BLOCK_TYPES];
@@ -106,6 +115,8 @@ export interface FavoriteEntry {
 
 // ─── UI State ────────────────────────────────────────────────────
 export const RESEARCH_TABS = {
+  BIBLE: "bible",
+  SEARCH: "search",
   LIBRARY: "library",
   REFERENCE: "reference",
   ANNOTATIONS: "annotations",

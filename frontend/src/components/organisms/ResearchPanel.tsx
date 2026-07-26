@@ -11,6 +11,8 @@ import { NotesPanel } from "@/components/organisms/NotesPanel";
 import { InteropPanel } from "@/components/organisms/InteropPanel";
 import { LibraryPanel } from "@/components/organisms/LibraryPanel";
 import { ChatPanel } from "@/components/organisms/ChatPanel";
+import { BiblePanel } from "@/components/organisms/BiblePanel";
+import { SearchPanel } from "@/components/organisms/SearchPanel";
 import {
   IconStar,
   IconStarFilled,
@@ -64,7 +66,7 @@ export function ResearchPanel({ className }: ResearchPanelProps) {
       )}
     >
       {/* ─── Header ─── */}
-      <header className="flex shrink-0 items-center justify-between gap-2 px-4 py-3">
+      <header className="flex shrink-0 items-center justify-between gap-2 px-4 py-3 sm:py-3">
         <div className="flex items-center gap-2">
           <IconBookmark
             width={16}
@@ -93,7 +95,11 @@ export function ResearchPanel({ className }: ResearchPanelProps) {
       />
 
       {/* ─── Contenido ─── */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {activeTab === RESEARCH_TABS.BIBLE && <BiblePanel className="h-full" />}
+
+        {activeTab === RESEARCH_TABS.SEARCH && <SearchPanel className="h-full" />}
+
         {activeTab === RESEARCH_TABS.LIBRARY && <LibraryPanel />}
 
         {activeTab === RESEARCH_TABS.REFERENCE && (
@@ -228,19 +234,26 @@ function AnnotationsTab({
 
               {/* Acciones */}
               <div className="mt-3 flex items-center gap-1.5">
-                <div className="flex items-center gap-1">
+                <div className="flex items-center">
                   {Object.values(HIGHLIGHT_COLORS).map((c) => (
                     <button
                       key={c}
                       onClick={() => onColorChange(ann.id, c)}
                       aria-label={`Cambiar a ${c}`}
-                      className={cn(
-                        "h-4 w-4 rounded-full ring-1 ring-black/10 dark:ring-white/10",
-                        "transition-transform hover:scale-125",
-                        MARK_DOT[c],
-                        ann.color === c && "ring-2 ring-amber-600",
-                      )}
-                    />
+                      aria-pressed={ann.color === c}
+                      // El punto sigue midiendo 16px, pero el botón que lo
+                      // contiene llega a 36px: con el dedo, 16px no se acierta.
+                      className="flex h-9 w-8 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                    >
+                      <span
+                        className={cn(
+                          "h-4 w-4 rounded-full ring-1 ring-black/10 dark:ring-white/10",
+                          "transition-transform",
+                          MARK_DOT[c],
+                          ann.color === c && "scale-125 ring-2 ring-amber-600",
+                        )}
+                      />
+                    </button>
                   ))}
                 </div>
 
@@ -248,7 +261,7 @@ function AnnotationsTab({
 
                 <button
                   onClick={() => onEditNote(ann.id)}
-                  className="flex items-center gap-1 rounded-md px-2 py-1 font-ui text-[11px] text-muted-light hover:bg-paper-200 hover:text-reading-light dark:text-muted-dark dark:hover:bg-ink-50 dark:hover:text-reading-dark"
+                  className="flex min-h-[36px] items-center gap-1 rounded-md px-2.5 py-1 font-ui text-[11px] text-muted-light hover:bg-paper-200 hover:text-reading-light dark:text-muted-dark dark:hover:bg-ink-50 dark:hover:text-reading-dark"
                 >
                   <IconNote width={12} height={12} />
                   {ann.note ? "Editar" : "Nota"}
@@ -257,7 +270,7 @@ function AnnotationsTab({
                 <button
                   onClick={() => onRemove(ann.id)}
                   aria-label="Eliminar anotación"
-                  className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-muted-light hover:bg-red-50 hover:text-red-600 dark:text-muted-dark dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                  className="ml-auto flex h-9 w-9 items-center justify-center rounded-md text-muted-light hover:bg-red-50 hover:text-red-600 dark:text-muted-dark dark:hover:bg-red-900/20 dark:hover:text-red-400"
                 >
                   <IconTrash width={13} height={13} />
                 </button>
@@ -302,7 +315,8 @@ function FavoritesTab({
           <button
             onClick={() => onToggle(identifier)}
             aria-label="Quitar de favoritos"
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-light opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:text-muted-dark dark:hover:bg-red-900/20 dark:hover:text-red-400"
+            // Sin hover en táctil: en móvil siempre visible, en escritorio al pasar.
+            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-light transition-opacity hover:bg-red-50 hover:text-red-600 md:opacity-0 md:group-hover:opacity-100 dark:text-muted-dark dark:hover:bg-red-900/20 dark:hover:text-red-400"
           >
             <IconTrash width={13} height={13} />
           </button>

@@ -29,6 +29,7 @@ from typing import AsyncGenerator, Dict, Any, Optional
 from openai import AsyncOpenAI
 
 from .mcp_bridge import get_mcp_bridge
+from .native_tools import NATIVE_TOOLS, call_native_tool, is_native_tool
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,40 @@ logger = logging.getLogger(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "2000"))
-# Modelos de razonamiento (gpt-5.x, o-series) exigen reasoning_effort='none' para
-# poder usar function tools en /v1/chat/completions. Configurable: pon vacío
-# ("") para modelos clásicos (gpt-4o-mini) que no aceptan este parámetro.
-OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "none").strip()
-_EXTRA_PARAMS: Dict[str, Any] = (
+
+# ─── reasoning_effort ────────────────────────────────────────────
+# Los modelos de razonamiento (gpt-5.x, o-series) aceptan reasoning_effort con
+# valores 'none' | 'low' | 'medium' | 'high' | 'xhigh'. DOS restricciones reales
+# (verificadas contra la API, no supuestas):
+#
+#   1. Cualquier otro valor (p. ej. "max") → 400 invalid_request_error y el chat
+#      entero se cae. Por eso validamos contra la lista blanca y degradamos a
+#      'none' en vez de propagar el fallo.
+#   2. Con `tools` en /v1/chat/completions SOLO se admite 'none':
+#      "Function tools with reasoning_effort are not supported ... set
+#      reasoning_effort to 'none'". Por eso las rondas de tool-calling van
+#      siempre con 'none' y el effort configurado se reserva para la ronda
+#      final de redacción, que va SIN tools y sí puede razonar.
+#
+# Pon la variable vacía ("") para modelos clásicos (gpt-4o-mini) que no
+# aceptan el parámetro en absoluto.
+_VALID_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
+
+_raw_effort = os.getenv("OPENAI_REASONING_EFFORT", "none").strip().lower()
+if _raw_effort and _raw_effort not in _VALID_EFFORTS:
+    logger.warning(
+        "OPENAI_REASONING_EFFORT=%r no es válido (admitidos: %s). Usando 'none'.",
+        _raw_effort,
+        ", ".join(sorted(_VALID_EFFORTS)),
+    )
+    _raw_effort = "none"
+
+OPENAI_REASONING_EFFORT = _raw_effort
+
+# Rondas con tools: forzado a 'none' (restricción 2).
+_TOOL_PARAMS: Dict[str, Any] = {"reasoning_effort": "none"} if OPENAI_REASONING_EFFORT else {}
+# Ronda final sin tools: se respeta el effort configurado.
+_ANSWER_PARAMS: Dict[str, Any] = (
     {"reasoning_effort": OPENAI_REASONING_EFFORT} if OPENAI_REASONING_EFFORT else {}
 )
 
@@ -58,18 +88,22 @@ herramientas primero.
 BUSCA EN VARIAS FUENTES (MUY IMPORTANTE):
 No te limites a UNA sola herramienta ni a UNA sola búsqueda. Para dar una respuesta
 completa DEBES consultar MÚLTIPLES fuentes relevantes y COMBINAR la información:
-- Versículos bíblicos con sus notas de estudio (get_verse_with_study).
-- Artículos de La Atalaya (getWatchtowerContent).
-- La guía de actividades / Vida y Ministerio Cristianos (getWorkbookContent).
-- Videos de JW Broadcasting cuando apliquen (get_jw_captions).
+- El texto bíblico en español (leer_pasaje_biblico).
+- Artículos de la Biblioteca en Línea: busca con buscar_en_biblioteca y LUEGO lee
+  el más relevante con abrir_documento — un fragmento de búsqueda NO basta para
+  responder, tienes que abrir el documento.
+- Notas de estudio, guía de actividades y vídeos vía MCP cuando estén disponibles.
 Puedes pedir herramientas en VARIAS RONDAS: primero busca, y si necesitas más
 contexto de otra fuente, vuelve a pedir herramientas antes de responder. Solo redacta
 la respuesta final cuando hayas reunido información suficiente de las fuentes relevantes.
 
-IDIOMA — TRADUCE AL ESPAÑOL:
-El MCP responde en INGLÉS (los nombres de libros bíblicos y el contenido vienen en
-inglés). DEBES TRADUCIR ese contenido al español de forma natural y responder SIEMPRE
-en español (salvo que el usuario pida otro idioma), citando la fuente original.
+IDIOMA:
+Las herramientas nativas (leer_pasaje_biblico, buscar_en_biblioteca, abrir_documento,
+obtener_texto_del_dia) YA devuelven español: úsalas como fuente preferente y cita su
+texto literalmente, sin retraducir. Las herramientas del MCP (get_verse_with_study,
+getWatchtowerContent, getWorkbookContent, get_jw_captions), cuando estén disponibles,
+responden en INGLÉS: traduce ese contenido al español de forma natural.
+Responde SIEMPRE en español salvo que el usuario pida otro idioma.
 
 REGLAS ESTRICTAS:
 1. SIEMPRE busca con las herramientas ANTES de responder — nunca respondas de memoria.
@@ -83,11 +117,18 @@ REGLAS ESTRICTAS:
 8. Usa formato Markdown (encabezados, listas, negritas) para estructurar la respuesta.
 
 HERRAMIENTAS DISPONIBLES:
-- get_verse_with_study: obtiene versículos bíblicos con notas de estudio y referencias cruzadas
-- getWatchtowerContent: obtiene artículos de La Atalaya
-- getWorkbookContent: obtiene material del libro de actividades Vida y Ministerio Cristianos
-- get_jw_captions: obtiene subtítulos de videos de JW Broadcasting
+Nativas (español, siempre disponibles):
+- leer_pasaje_biblico: texto real de un pasaje de la Biblia (Traducción del Nuevo Mundo)
+- buscar_en_biblioteca: busca en wol.jw.org (Atalaya, Despertad, libros, guía)
+- abrir_documento: texto completo de un artículo por su doc_id
+- obtener_texto_del_dia: el texto diario de hoy con su comentario
+MCP (inglés, sólo si están listadas en esta conversación):
+- get_verse_with_study: versículos con notas de estudio y referencias cruzadas
+- getWatchtowerContent: artículos de La Atalaya
+- getWorkbookContent: material de Vida y Ministerio Cristianos
+- get_jw_captions: subtítulos de vídeos de JW Broadcasting
 
+Usa SOLO herramientas de la lista que se te ha entregado en esta conversación.
 Recuerda: sin consulta previa a las herramientas, NO respondas.
 """
 
@@ -104,7 +145,10 @@ class ChatService:
                 "OPENAI_API_KEY no configurada. Añádela en backend/.env"
             )
         self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        # Sólo las del MCP (para diagnóstico en /api/chat/health).
         self.mcp_tools: list[Dict[str, Any]] = []
+        # Las que realmente se le ofrecen al modelo: nativas + MCP.
+        self.tools: list[Dict[str, Any]] = []
         self._tools_loaded = False
 
     def _load_mcp_tools_sync(self) -> list[Dict[str, Any]]:
@@ -127,15 +171,38 @@ class ChatService:
         ]
 
     async def ensure_tools(self) -> None:
-        """Carga las herramientas MCP una sola vez (idempotente)."""
+        """
+        Deja ``self.tools`` listo (idempotente).
+
+        Las herramientas nativas están SIEMPRE; las del MCP se añaden encima si
+        el bridge arranca. Que el MCP falle degrada la calidad (sin notas de
+        estudio ni vídeos), pero ya no deja al chat sin fuentes.
+        """
         if self._tools_loaded:
             return
         try:
             self.mcp_tools = await asyncio.to_thread(self._load_mcp_tools_sync)
         except Exception:
-            logger.exception("Error cargando MCP tools")
+            logger.warning(
+                "MCP no disponible; el chat seguirá con las herramientas nativas",
+                exc_info=True,
+            )
             self.mcp_tools = []
+        self.tools = [*NATIVE_TOOLS, *self.mcp_tools]
         self._tools_loaded = True
+
+    async def _run_tool(self, name: str, args: Dict[str, Any]) -> str:
+        """Ejecuta una herramienta (nativa o MCP) y devuelve su resultado en JSON."""
+        try:
+            if is_native_tool(name):
+                result = await asyncio.to_thread(call_native_tool, name, args)
+            else:
+                bridge = get_mcp_bridge()
+                result = await asyncio.to_thread(bridge.call_tool, name, args)
+            return json.dumps(result, ensure_ascii=False)
+        except Exception:
+            logger.exception("Error ejecutando herramienta %s", name)
+            return json.dumps({"error": "tool execution failed"})
 
     async def chat_stream(
         self, messages: list[Dict[str, str]]
@@ -163,7 +230,7 @@ class ChatService:
         # devolvemos los resultados. Cuando deja de pedir herramientas (o se
         # alcanza MAX_TOOL_ROUNDS) salimos y hacemos la respuesta final en
         # streaming SIN tools (para forzar que responda).
-        if self.mcp_tools:
+        if self.tools:
             for round_idx in range(MAX_TOOL_ROUNDS):
                 # 1ª ronda: forzamos tool use. Rondas siguientes: "auto"
                 # (el modelo decide si necesita más fuentes o ya puede responder).
@@ -172,10 +239,10 @@ class ChatService:
                     response = await self.client.chat.completions.create(
                         model=OPENAI_MODEL,
                         messages=full_messages,
-                        tools=self.mcp_tools,
+                        tools=self.tools,
                         tool_choice=tool_choice,
                         max_completion_tokens=OPENAI_MAX_TOKENS,
-                        **_EXTRA_PARAMS,
+                        **_TOOL_PARAMS,
                     )
                 except Exception:
                     logger.exception(
@@ -215,7 +282,7 @@ class ChatService:
                     "tool_calls": assistant_tool_calls,
                 })
 
-                # Ejecutar cada herramienta via MCP bridge (en thread) y emitir
+                # Ejecutar cada herramienta (nativa o MCP, en thread) y emitir
                 # un evento SSE tool_call por cada una.
                 for tc in raw_tool_calls:
                     tool_name = tc.function.name
@@ -229,17 +296,7 @@ class ChatService:
                         "tool_call", {"name": tool_name, "arguments": tool_args}
                     )
 
-                    try:
-                        bridge = get_mcp_bridge()
-                        result = await asyncio.to_thread(
-                            bridge.call_tool, tool_name, tool_args
-                        )
-                        content = json.dumps(result)
-                    except Exception:
-                        logger.exception(
-                            "Error ejecutando herramienta MCP %s", tool_name
-                        )
-                        content = json.dumps({"error": "tool execution failed"})
+                    content = await self._run_tool(tool_name, tool_args)
 
                     full_messages.append({
                         "role": "tool",
@@ -260,7 +317,7 @@ class ChatService:
                 max_completion_tokens=OPENAI_MAX_TOKENS,
                 stream=True,
                 stream_options={"include_usage": True},
-                **_EXTRA_PARAMS,
+                **_ANSWER_PARAMS,
             )
             async for chunk in final_stream:
                 if getattr(chunk, "usage", None):

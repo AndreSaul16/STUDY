@@ -24,17 +24,22 @@ const TYPE_LABELS = {
 
 export function referenceLabel(ref: Reference): string {
   switch (ref.type) {
+    // El capítulo va pegado a los dos puntos: unir las piezas con espacios
+    // producía "Ec 9 :10" en vez de "Ec 9:10".
     case REFERENCE_TYPES.SCRIPTURE: {
-      const parts = [ref.publication];
-      if (ref.chapter !== null) parts.push(`${ref.chapter}`);
-      if (ref.paragraph !== null) parts.push(`:${ref.paragraph}`);
-      return parts.filter(Boolean).join(" ");
+      const locator = [ref.chapter, ref.paragraph]
+        .filter((part) => part !== null)
+        .join(":");
+      return [ref.publication, locator].filter(Boolean).join(" ");
     }
     case REFERENCE_TYPES.PUBLICATION: {
-      const parts = [ref.publication];
-      if (ref.chapter !== null) parts.push(`${ref.chapter}`);
-      if (ref.paragraph !== null) parts.push(`#${ref.paragraph}`);
-      return parts.filter(Boolean).join(" ");
+      const locator = [
+        ref.chapter !== null ? `${ref.chapter}` : null,
+        ref.paragraph !== null ? `#${ref.paragraph}` : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return [ref.publication, locator].filter(Boolean).join(" ");
     }
     case REFERENCE_TYPES.FOOTNOTE:
       return `Nota ${ref.paragraph ?? ""}`.trim();

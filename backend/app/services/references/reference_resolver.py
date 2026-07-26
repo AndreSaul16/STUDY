@@ -140,6 +140,114 @@ def _parse_wol_spanish(
     return " ".join(p for p in parts if p).strip()
 
 
+def _parse_wol_chapter_verses(
+    html: str, book_num: int, chapter: int
+) -> list[tuple[int, str]]:
+    """
+    Extrae el capítulo como lista ``(nº de versículo, texto)``.
+
+    Es la variante "por versículos" de ``_parse_wol_spanish(verse="all")``, que
+    devuelve todo concatenado. El lector necesita los versículos sueltos para
+    poder subrayar y anotar cada uno por separado.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    prefix = re.compile(rf"^v{book_num}-{chapter}-(\d+)-")
+
+    by_verse: "OrderedDict[int, list[str]]" = OrderedDict()
+    for span in soup.select("span.v"):
+        m = prefix.match(span.get("id", ""))
+        if not m:
+            continue
+        vnum = int(m.group(1))
+        # El versículo 0 es la superscripción del salmo, no texto del capítulo.
+        if vnum == 0:
+            continue
+        by_verse.setdefault(vnum, []).append(_clean_verse_span(span))
+
+    verses: list[tuple[int, str]] = []
+    for vnum, parts in sorted(by_verse.items()):
+        text = " ".join(p for p in parts if p).strip()
+        if text:
+            verses.append((vnum, text))
+    return verses
+
+
+@dataclass(frozen=True)
+class BibleChapter:
+    """Un capítulo bíblico completo, versículo a versículo."""
+
+    book_number: int
+    book_name: str
+    chapter: int
+    verses: list[tuple[int, str]]
+    source_url: str
+
+    def to_dict(self) -> dict:
+        return {
+            "book_number": self.book_number,
+            "book_name": self.book_name,
+            "chapter": self.chapter,
+            "title": f"{self.book_name} {self.chapter}",
+            "source_url": self.source_url,
+            "verses": [{"verse": n, "text": t} for n, t in self.verses],
+        }
+
+
+_chapter_cache: "OrderedDict[str, BibleChapter]" = OrderedDict()
+
+
+def fetch_chapter(book: str, chapter: int) -> BibleChapter:
+    """
+    Descarga un capítulo completo de la Biblia en español desde WOL.
+
+    ``book`` es el nombre en español (ej. "Juan", "1 Corintios"). Lanza
+    ReferenceResolutionError si el libro no se reconoce o no hay contenido.
+    """
+    book_num = book_number(book)
+    if book_num is None:
+        raise ReferenceResolutionError(f"Libro no reconocido: {book}")
+    if chapter < 1:
+        raise ReferenceResolutionError("Capítulo inválido")
+
+    cache_key = f"{book_num}:{chapter}"
+    cached = _chapter_cache.get(cache_key)
+    if cached is not None:
+        _chapter_cache.move_to_end(cache_key)
+        return cached
+
+    url = f"{_WOL_BASE}/{book_num}/{chapter}"
+    try:
+        response = httpx.get(
+            url,
+            timeout=_TIMEOUT_SECONDS,
+            headers={"User-Agent": _USER_AGENT},
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        verses = _parse_wol_chapter_verses(response.text, book_num, chapter)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("No se pudo obtener %s %s: %s", book, chapter, exc)
+        raise ReferenceResolutionError("No se pudo obtener el capítulo") from exc
+
+    if not verses:
+        raise ReferenceResolutionError("Capítulo sin contenido")
+
+    result = BibleChapter(
+        book_number=book_num,
+        book_name=book_display_name(book_num),
+        chapter=chapter,
+        verses=verses,
+        source_url=url,
+    )
+
+    _chapter_cache[cache_key] = result
+    _chapter_cache.move_to_end(cache_key)
+    while len(_chapter_cache) > _CACHE_MAX_ENTRIES:
+        _chapter_cache.popitem(last=False)
+
+    return result
+
+
 def _fallback_mcp(
     book_num: int, chapter: int, verse: str, identifier: str
 ) -> ResolvedReference:

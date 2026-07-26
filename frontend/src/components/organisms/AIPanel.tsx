@@ -45,12 +45,11 @@ export function AIPanel({ className }: AIPanelProps) {
   const article = useReaderStore((s) => s.article);
   const { activeReference, resolvedContent } = useReferenceEngine();
 
-  // Bloque foco por defecto: el primer párrafo del artículo
-  // (en producción, sería el bloque visible/leccionado)
+  // Bloque foco por defecto: el primer párrafo con texto del artículo.
   const focusBlockId = useMemo(() => {
-    if (article.blocks.length === 0) return null;
+    if (!article || article.blocks.length === 0) return null;
     const firstParagraph = article.blocks.find(
-      (b) => b.blockType === "paragraph",
+      (b) => b.blockType === "paragraph" || b.blockType === "verse",
     );
     return firstParagraph?.blockId ?? article.blocks[0]!.blockId;
   }, [article]);
@@ -58,7 +57,8 @@ export function AIPanel({ className }: AIPanelProps) {
   const [selectedSkill, setSelectedSkill] = useState<AISkill>(AI_SKILLS.SUMMARY);
 
   const handleExecute = async () => {
-    if (focusBlockId === null) return; // Sin bloques → no hay contexto
+    // Sin lectura abierta no hay nada que analizar.
+    if (!article || focusBlockId === null) return;
     const context = buildAIContext({
       article,
       focusBlockId,
@@ -117,7 +117,8 @@ export function AIPanel({ className }: AIPanelProps) {
               variant="primary"
               size="sm"
               onClick={handleExecute}
-              className="flex-1"
+              disabled={!article}
+              className="min-h-[40px] flex-1"
             >
               {hasResult(selectedSkill) ? "Regenerar" : "Analizar con IA"}
             </Button>
@@ -188,8 +189,10 @@ export function AIPanel({ className }: AIPanelProps) {
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-paper-200 text-muted-light dark:bg-ink-50 dark:text-muted-dark">
                 <IconArrowDown width={20} height={20} />
               </div>
-              <p className="font-ui text-xs text-muted-light dark:text-muted-dark">
-                Selecciona una tarea y pulsa «Analizar con IA»
+              <p className="font-ui text-xs leading-relaxed text-muted-light dark:text-muted-dark">
+                {article
+                  ? "Selecciona una tarea y pulsa «Analizar con IA»"
+                  : "Abre un capítulo o un artículo para analizarlo con IA."}
               </p>
             </div>
           )

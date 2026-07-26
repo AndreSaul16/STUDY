@@ -9,6 +9,7 @@ al chat service para que el LLM pueda llamarlas.
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -18,11 +19,37 @@ from queue import Queue, Empty
 logger = logging.getLogger(__name__)
 
 
+def _resolve_mcp_command(configured: Optional[str]) -> str:
+    """
+    Elige el ejecutable de jw-mcp.
+
+    JW_MCP_PATH puede quedar apuntando a una ruta que sólo existe en la máquina
+    de desarrollo (p. ej. el shim de pnpm en WSL). Dentro del contenedor esa
+    ruta no existe y el bridge moría con FileNotFoundError. Si la ruta
+    configurada es absoluta y no existe, caemos al binario ``jw-mcp`` del PATH,
+    que es como lo instala la imagen Docker.
+    """
+    candidate = (configured or "").strip() or "jw-mcp"
+
+    if os.path.isabs(candidate) and not Path(candidate).exists():
+        fallback = shutil.which("jw-mcp")
+        if fallback:
+            logger.warning(
+                "JW_MCP_PATH=%s no existe; usando %s del PATH.", candidate, fallback
+            )
+            return fallback
+        logger.warning("JW_MCP_PATH=%s no existe y no hay jw-mcp en el PATH.", candidate)
+
+    return candidate
+
+
 class MCPBridge:
     """Puente para comunicarse con jw-mcp via stdio."""
 
     def __init__(self, jw_mcp_path: Optional[str] = None):
-        self.jw_mcp_path = jw_mcp_path or os.getenv("JW_MCP_PATH", "jw-mcp")
+        self.jw_mcp_path = _resolve_mcp_command(
+            jw_mcp_path or os.getenv("JW_MCP_PATH")
+        )
         self.process: Optional[subprocess.Popen] = None
         self.request_id = 0
         self.responses: Dict[int, Queue] = {}
