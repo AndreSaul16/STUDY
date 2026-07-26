@@ -31,6 +31,7 @@ from dataclasses import asdict, dataclass
 import httpx
 from bs4 import BeautifulSoup
 
+from ..jw import content_cache
 from ..jw.book_numbers import book_display_name, book_number
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,21 @@ def fetch_chapter(book: str, chapter: int) -> BibleChapter:
         _chapter_cache.move_to_end(cache_key)
         return cached
 
+    # Caché en disco. El texto bíblico no cambia, así que es permanente: un
+    # capítulo se descarga una vez en la vida de la instalación.
+    persistido = content_cache.get("chapter", cache_key)
+    if persistido is not None:
+        resultado = BibleChapter(
+            book_number=persistido["book_number"],
+            book_name=persistido["book_name"],
+            chapter=persistido["chapter"],
+            verses=[(v["verse"], v["text"]) for v in persistido["verses"]],
+            source_url=persistido["source_url"],
+        )
+        _chapter_cache[cache_key] = resultado
+        _chapter_cache.move_to_end(cache_key)
+        return resultado
+
     url = f"{_WOL_BASE}/{book_num}/{chapter}"
     try:
         response = httpx.get(
@@ -245,6 +261,7 @@ def fetch_chapter(book: str, chapter: int) -> BibleChapter:
     while len(_chapter_cache) > _CACHE_MAX_ENTRIES:
         _chapter_cache.popitem(last=False)
 
+    content_cache.put("chapter", cache_key, result.to_dict())
     return result
 
 
@@ -322,6 +339,13 @@ def resolve_reference(identifier: str) -> ResolvedReference:
         _cache.move_to_end(identifier)
         return cached
 
+    # Caché en disco, permanente: el texto de un versículo no cambia.
+    persistido = content_cache.get("verse", identifier)
+    if persistido is not None:
+        resuelto = ResolvedReference(**persistido)
+        _cache_put(identifier, resuelto)
+        return resuelto
+
     book_name, chapter, verse = _parse_identifier(identifier)
     book_num = book_number(book_name)
     if book_num is None:
@@ -362,6 +386,7 @@ def resolve_reference(identifier: str) -> ResolvedReference:
         resolved = _fallback_mcp(book_num, chapter, verse, identifier)
 
     _cache_put(identifier, resolved)
+    content_cache.put("verse", identifier, resolved.to_dict())
     return resolved
 
 

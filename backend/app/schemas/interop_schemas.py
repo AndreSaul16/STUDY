@@ -128,14 +128,70 @@ class ExportRequest(BaseModel):
     note_tag_links: List[NoteTagLinkDTO] = Field(default_factory=list)
 
 
+class LibraryEntryDTO(BaseModel):
+    """
+    Un sitio que el usuario ha estudiado, sacado de la tabla `Location`.
+
+    Es el índice de su biblioteca personal. El .jwlibrary NO trae el texto de
+    las publicaciones: trae estos punteros. El contenido se descarga después
+    de wol.jw.org (el `document_id` es el mismo docId de WOL) o de un .jwpub.
+    """
+    location_id: int
+    kind: str = Field(..., description='"bible" o "publication"')
+    title: Optional[str] = None
+    # Capítulo bíblico
+    book_number: Optional[int] = None
+    chapter_number: Optional[int] = None
+    # Publicación
+    document_id: Optional[int] = None
+    key_symbol: Optional[str] = None
+    issue_tag_number: int = 0
+    meps_language: Optional[int] = None
+    # Cuánto trabajo hay hecho aquí — para ordenar por relevancia
+    mark_count: int = 0
+    note_count: int = 0
+
+
+class ImportedMarkDTO(BaseModel):
+    """Un subrayado del backup, ya resuelto a su localización."""
+    guid: str
+    location_id: int
+    color_index: int
+    style_index: int = 0
+    block_type: Optional[int] = None
+    identifier: Optional[int] = None
+    start_token: Optional[int] = None
+    end_token: Optional[int] = None
+
+
+class ImportedNoteDTO(BaseModel):
+    """Una nota del backup."""
+    guid: str
+    location_id: Optional[int] = None
+    title: str = ""
+    content: str = ""
+    last_modified: Optional[str] = None
+    block_type: Optional[int] = None
+    block_identifier: Optional[int] = None
+    tags: List[str] = Field(default_factory=list)
+
+
 class ImportResult(BaseModel):
-    """Resultado de importar un .jwlibrary."""
+    """
+    Resultado de importar un .jwlibrary.
+
+    Además de los totales, devuelve el índice de la biblioteca y las
+    anotaciones. Antes solo contaba filas: enseñaba "8.580 marcas" y no
+    entraba nada en la app.
+    """
     success: bool
     user_marks_count: int = 0
     notes_count: int = 0
     tags_count: int = 0
     bookmarks_count: int = 0
-    documents: List[int] = Field(default_factory=list, description="DocumentIds encontrados")
+    library: List[LibraryEntryDTO] = Field(default_factory=list)
+    marks: List[ImportedMarkDTO] = Field(default_factory=list)
+    notes: List[ImportedNoteDTO] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
 
 

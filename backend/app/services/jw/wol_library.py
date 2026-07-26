@@ -40,6 +40,8 @@ from dataclasses import asdict, dataclass, field
 import httpx
 from bs4 import BeautifulSoup
 
+from . import content_cache
+
 logger = logging.getLogger(__name__)
 
 # ─── Configuración ───────────────────────────────────────────────
@@ -192,6 +194,14 @@ def search_library(query: str, limit: int = 8) -> list[SearchResult]:
         _search_cache.move_to_end(cache_key)
         return cached
 
+    # Caché en disco: sobrevive al reinicio y no tiene el tope de la de
+    # memoria. Las búsquedas caducan porque WOL sí añade publicaciones.
+    persistido = content_cache.get("search", cache_key)
+    if persistido is not None:
+        results = [SearchResult(**r) for r in persistido]
+        _cache_put(_search_cache, cache_key, results, _SEARCH_CACHE_MAX)
+        return results
+
     html = _get(_SEARCH_URL, params={"q": clean, "p": "par", "r": "occ"})
     soup = BeautifulSoup(html, "html.parser")
 
@@ -235,6 +245,12 @@ def search_library(query: str, limit: int = 8) -> list[SearchResult]:
             break
 
     _cache_put(_search_cache, cache_key, results, _SEARCH_CACHE_MAX)
+    content_cache.put(
+        "search",
+        cache_key,
+        [r.to_dict() for r in results],
+        ttl_seconds=content_cache.search_ttl(),
+    )
     return results
 
 
@@ -301,6 +317,19 @@ def get_document(doc_id: int) -> WolDocument:
         _doc_cache.move_to_end(doc_id)
         return cached
 
+    # Permanente: un artículo publicado no cambia. Descargarlo una vez basta.
+    persistido = content_cache.get("document", str(doc_id))
+    if persistido is not None:
+        document = WolDocument(
+            doc_id=persistido["doc_id"],
+            title=persistido["title"],
+            citation=persistido["citation"],
+            url=persistido["url"],
+            blocks=[WolBlock(**b) for b in persistido["blocks"]],
+        )
+        _cache_put(_doc_cache, doc_id, document, _DOC_CACHE_MAX)
+        return document
+
     url = f"{_DOC_URL}/{doc_id}"
     soup = BeautifulSoup(_get(url), "html.parser")
 
@@ -341,4 +370,5 @@ def get_document(doc_id: int) -> WolDocument:
         blocks=blocks,
     )
     _cache_put(_doc_cache, doc_id, document, _DOC_CACHE_MAX)
+    content_cache.put("document", str(doc_id), document.to_dict())
     return document

@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
 from ..services.jw import DailyTextError, fetch_daily_text
+from ..services.jw import content_cache
 from ..services.jw.book_numbers import all_books
 from ..services.references import ReferenceResolutionError, fetch_chapter
 
@@ -69,3 +70,15 @@ async def get_bible_chapter(book: str, chapter: int):
         raise HTTPException(502, "No se pudo obtener el capítulo")
 
     return result.to_dict()
+
+
+@router.get("/cache")
+async def cache_stats():
+    """
+    Qué hay cacheado del contenido de WOL.
+
+    El contenido publicado es inmutable, así que se guarda en disco y una
+    lectura repetida no vuelve a salir a la red: pasa de segundos a
+    microsegundos, y sobrevive al reinicio del proceso.
+    """
+    return content_cache.stats()

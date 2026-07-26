@@ -25,7 +25,12 @@ import tempfile
 import zipfile
 import sqlite3
 from typing import BinaryIO, Optional, Tuple
-from ...schemas.interop_schemas import ImportResult
+from ...schemas.interop_schemas import (
+    ImportedMarkDTO,
+    ImportedNoteDTO,
+    ImportResult,
+    LibraryEntryDTO,
+)
 
 
 MAX_ZIP_SIZE = 100 * 1024 * 1024  # 100 MB
@@ -137,10 +142,12 @@ class JWLibraryReader:
             tmp.close()
 
             conn = sqlite3.connect(tmp.name)
+            conn.row_factory = sqlite3.Row
             try:
-                marks, notes, tags, bookmarks, documents = self._query_tables(
-                    conn, errors
-                )
+                marks, notes, tags, bookmarks, _ = self._query_tables(conn, errors)
+                library = self._read_library(conn, errors)
+                imported_marks = self._read_marks(conn, errors)
+                imported_notes = self._read_notes(conn, errors)
             finally:
                 conn.close()
 
@@ -150,7 +157,9 @@ class JWLibraryReader:
                 notes_count=notes,
                 tags_count=tags,
                 bookmarks_count=bookmarks,
-                documents=documents,
+                library=library,
+                marks=imported_marks,
+                notes=imported_notes,
                 errors=errors,
             )
         except Exception as e:
@@ -178,20 +187,138 @@ class JWLibraryReader:
                 errors.append(f"Cannot read {table}: {e}")
                 return 0
 
-        def safe_documents(table: str, col: str) -> list[int]:
-            try:
-                cur = conn.execute(f"SELECT DISTINCT {col} FROM {table}")
-                return [row[0] for row in cur.fetchall() if row[0] is not None]
-            except sqlite3.Error:
-                return []
-
         marks = safe_count("UserMark")
         notes = safe_count("Note")
         tags = safe_count("Tag")
         bookmarks = safe_count("Bookmark")
 
-        docs_from_marks = safe_documents("UserMark", "DocumentId")
-        docs_from_notes = safe_documents("Note", "DocumentId")
-        documents = list(set(docs_from_marks + docs_from_notes))
-
+        # Antes aquí se consultaba `UserMark.DocumentId` y `Note.DocumentId`.
+        # Esas columnas no existen —las marcas cuelgan de LocationId— y el
+        # error se tragaba en silencio, así que la lista salía siempre vacía.
+        # Los documentos reales los resuelve ahora `_read_library` desde
+        # `Location`, que es donde viven de verdad.
         return marks, notes, tags, bookmarks, documents
+
+    # ─── Lectura del contenido real ──────────────────────────────
+
+    def _read_library(
+        self, conn: sqlite3.Connection, errors: list[str]
+    ) -> list[LibraryEntryDTO]:
+        """
+        Índice de todo lo que el usuario ha estudiado, desde `Location`.
+
+        Es lo que convierte un backup en una biblioteca navegable: cada fila
+        dice dónde hay trabajo hecho, y el contenido se trae luego de WOL.
+        Se ordena por cantidad de anotaciones, que es un buen proxy de
+        "esto me importa".
+        """
+        try:
+            filas = conn.execute(
+                """
+                SELECT l.LocationId, l.BookNumber, l.ChapterNumber, l.DocumentId,
+                       l.KeySymbol, l.IssueTagNumber, l.MepsLanguage, l.Title,
+                       (SELECT COUNT(*) FROM UserMark um WHERE um.LocationId = l.LocationId) AS marcas,
+                       (SELECT COUNT(*) FROM Note n WHERE n.LocationId = l.LocationId) AS notas
+                FROM Location l
+                WHERE l.BookNumber IS NOT NULL OR l.DocumentId IS NOT NULL
+                ORDER BY marcas + notas DESC, l.Title
+                """
+            ).fetchall()
+        except sqlite3.Error as e:
+            errors.append(f"No se pudo leer la biblioteca: {e}")
+            return []
+
+        entradas: list[LibraryEntryDTO] = []
+        for f in filas:
+            # Sin anotaciones no aporta nada al índice: sería ruido.
+            if not f["marcas"] and not f["notas"]:
+                continue
+            es_biblia = f["BookNumber"] is not None
+            entradas.append(
+                LibraryEntryDTO(
+                    location_id=f["LocationId"],
+                    kind="bible" if es_biblia else "publication",
+                    title=f["Title"],
+                    book_number=f["BookNumber"],
+                    chapter_number=f["ChapterNumber"],
+                    document_id=f["DocumentId"],
+                    key_symbol=f["KeySymbol"],
+                    issue_tag_number=f["IssueTagNumber"] or 0,
+                    meps_language=f["MepsLanguage"],
+                    mark_count=f["marcas"],
+                    note_count=f["notas"],
+                )
+            )
+        return entradas
+
+    def _read_marks(
+        self, conn: sqlite3.Connection, errors: list[str]
+    ) -> list[ImportedMarkDTO]:
+        """
+        Los subrayados con su rango.
+
+        Una marca puede tener varios rangos; aquí se emite uno por rango,
+        que es la unidad que el lector necesita para pintar.
+        """
+        try:
+            filas = conn.execute(
+                """
+                SELECT um.UserMarkGuid, um.LocationId, um.ColorIndex, um.StyleIndex,
+                       br.BlockType, br.Identifier, br.StartToken, br.EndToken
+                FROM UserMark um
+                LEFT JOIN BlockRange br ON br.UserMarkId = um.UserMarkId
+                """
+            ).fetchall()
+        except sqlite3.Error as e:
+            errors.append(f"No se pudieron leer los subrayados: {e}")
+            return []
+
+        return [
+            ImportedMarkDTO(
+                guid=f["UserMarkGuid"],
+                location_id=f["LocationId"],
+                color_index=f["ColorIndex"],
+                style_index=f["StyleIndex"] or 0,
+                block_type=f["BlockType"],
+                identifier=f["Identifier"],
+                start_token=f["StartToken"],
+                end_token=f["EndToken"],
+            )
+            for f in filas
+        ]
+
+    def _read_notes(
+        self, conn: sqlite3.Connection, errors: list[str]
+    ) -> list[ImportedNoteDTO]:
+        """Las notas, con las etiquetas que tengan puestas (vía TagMap)."""
+        try:
+            filas = conn.execute(
+                """
+                SELECT n.Guid, n.LocationId, n.Title, n.Content, n.LastModified,
+                       n.BlockType, n.BlockIdentifier,
+                       (SELECT GROUP_CONCAT(t.Name, CHAR(31))
+                          FROM TagMap tm JOIN Tag t ON t.TagId = tm.TagId
+                         WHERE tm.NoteId = n.NoteId) AS etiquetas
+                FROM Note n
+                ORDER BY n.LastModified DESC
+                """
+            ).fetchall()
+        except sqlite3.Error as e:
+            errors.append(f"No se pudieron leer las notas: {e}")
+            return []
+
+        return [
+            ImportedNoteDTO(
+                guid=f["Guid"],
+                location_id=f["LocationId"],
+                title=f["Title"] or "",
+                content=f["Content"] or "",
+                last_modified=f["LastModified"],
+                block_type=f["BlockType"],
+                block_identifier=f["BlockIdentifier"],
+                # CHAR(31) como separador: es un carácter de control que no
+                # puede aparecer en el nombre de una etiqueta.
+                tags=f["etiquetas"].split(chr(31)) if f["etiquetas"] else [],
+            )
+            for f in filas
+        ]
