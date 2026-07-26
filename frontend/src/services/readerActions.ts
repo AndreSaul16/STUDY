@@ -43,6 +43,29 @@ async function load(run: () => Promise<void>, fallbackMessage: string): Promise<
   }
 }
 
+/**
+ * Precarga los capítulos contiguos, sin bloquear ni molestar.
+ *
+ * Leyendo la Biblia se pulsa ← y → constantemente, así que el acierto es
+ * altísimo con solo dos peticiones. Se hace en segundo plano y los fallos se
+ * ignoran: es una mejora de comodidad, no una operación necesaria.
+ *
+ * Deliberadamente NO se precarga en masa. Bajar la Biblia entera son 1.189
+ * capítulos y horas de peticiones seguidas contra wol.jw.org: eso deja de ser
+ * caché para convertirse en scraping, con el riesgo de bloqueo que conlleva.
+ * Como la caché del backend es compartida, además, basta con que un capítulo
+ * se pida una vez desde cualquier dispositivo.
+ */
+function prefetchNeighbours(book: string, chapter: number): void {
+  for (const target of [chapter + 1, chapter - 1]) {
+    if (target < 1) continue;
+    void fetchChapter(book, target).catch(() => {
+      // Un capítulo que no existe (pasado el final del libro) o un fallo de
+      // red no son un problema: solo significa que no habrá adelanto.
+    });
+  }
+}
+
 /** Abre un capítulo de la Biblia. */
 export function openBibleChapter(book: string, chapter: number): Promise<void> {
   return load(async () => {
@@ -54,6 +77,8 @@ export function openBibleChapter(book: string, chapter: number): Promise<void> {
         book: data.book_name,
         chapter: data.chapter,
       });
+
+    prefetchNeighbours(data.book_name, data.chapter);
   }, "No se pudo abrir el capítulo");
 }
 

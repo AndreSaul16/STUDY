@@ -1,14 +1,19 @@
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { cn } from "@/utils/cn";
 import { useLibraryStore } from "@/store/libraryStore";
 import { useUIStore } from "@/store/uiStore";
 import { jwpubClient } from "@/services/jwpubClient";
-import { listPublications, savePublication } from "@/services/libraryCache";
+import {
+  deletePublication,
+  listPublications,
+  savePublication,
+  type StoredPublication,
+} from "@/services/libraryCache";
 import { openJwpubDocument } from "@/services/readerActions";
 import { Button } from "@/components/atoms/Button";
 import { Badge } from "@/components/atoms/Badge";
 import { Divider } from "@/components/atoms/Divider";
-import { IconBook } from "@/components/atoms/Icons";
+import { IconBook, IconTrash } from "@/components/atoms/Icons";
 
 interface LibraryPanelProps {
   className?: string;
@@ -40,29 +45,48 @@ export function LibraryPanel({ className }: LibraryPanelProps) {
   const setMobileSheetOpen = useUIStore((s) => s.setMobileSheetOpen);
 
   /**
-   * Al montar, restaurar la última publicación desde la biblioteca local.
+   * Todas las publicaciones guardadas en el navegador (IndexedDB).
    *
-   * Vive en IndexedDB, no en el backend: así sigue ahí después de refrescar,
-   * de cerrar el navegador y de cualquier redespliegue del servidor.
+   * Se acumulan: cada .jwpub que subes se queda, sobrevive al refresco, al
+   * cierre del navegador y a cualquier redespliegue del servidor. Antes solo
+   * se restauraba la última y las demás quedaban invisibles aunque estuvieran
+   * guardadas.
    */
+  const [stored, setStored] = useState<StoredPublication[]>([]);
+
+  const refreshStored = useCallback(async () => {
+    try {
+      setStored(await listPublications());
+    } catch {
+      // Sin biblioteca guardada: el estado vacío ya lo explica.
+    }
+  }, []);
+
   useEffect(() => {
-    if (activePublication) return;
+    void refreshStored();
+  }, [refreshStored]);
 
-    let cancelled = false;
-    listPublications()
-      .then((stored) => {
-        const latest = stored[0];
-        if (!latest || cancelled) return;
-        loadPublication(latest.publication, latest.documents, latest.toc);
-      })
-      .catch(() => {
-        // Sin biblioteca guardada: el estado vacío ya lo explica.
-      });
+  // Al arrancar sin nada abierto, recuperar la última que se estuviera leyendo.
+  useEffect(() => {
+    if (activePublication || stored.length === 0) return;
+    const latest = stored[0]!;
+    loadPublication(latest.publication, latest.documents, latest.toc);
+  }, [activePublication, stored, loadPublication]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [activePublication, loadPublication]);
+  const handleSelectPublication = async (symbol: string) => {
+    const entry = stored.find((p) => p.symbol === symbol);
+    if (!entry) return;
+    loadPublication(entry.publication, entry.documents, entry.toc);
+    if (entry.documents.length > 0) {
+      await openJwpubDocument(0, symbol);
+      setMobileSheetOpen(false);
+    }
+  };
+
+  const handleRemovePublication = async (symbol: string) => {
+    await deletePublication(symbol);
+    await refreshStored();
+  };
 
   const handleUpload = async (file: File) => {
     setBusy(true);
@@ -79,6 +103,7 @@ export function LibraryPanel({ className }: LibraryPanelProps) {
       loadPublication(result.publication, result.documents, result.toc);
       // Guardarla en el navegador para que siga estando en la próxima visita.
       await savePublication(result.publication, result.documents, result.toc);
+      await refreshStored();
 
       if (result.documents.length > 0) {
         await openJwpubDocument(0, result.publication.symbol);
@@ -150,6 +175,57 @@ export function LibraryPanel({ className }: LibraryPanelProps) {
           </div>
         )}
       </section>
+
+      {/* ─── Publicaciones guardadas en este navegador ─── */}
+      {stored.length > 0 && (
+        <>
+          <Divider className="my-4" />
+          <section className="space-y-2">
+            <h4 className="font-ui text-[10px] uppercase tracking-[0.15em] text-amber-700 dark:text-amber-400">
+              Tus publicaciones · {stored.length}
+            </h4>
+            <ul className="space-y-1">
+              {stored.map((pub) => {
+                const activa = pub.symbol === activePublication?.symbol;
+                return (
+                  <li key={pub.symbol} className="group flex items-center gap-1">
+                    <button
+                      onClick={() => void handleSelectPublication(pub.symbol)}
+                      className={cn(
+                        "min-h-[44px] flex-1 rounded-md px-3 py-2 text-left transition-colors",
+                        activa
+                          ? "bg-amber-50 ring-1 ring-amber-600 dark:bg-amber-800/20"
+                          : "hover:bg-paper-200 dark:hover:bg-ink-50",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "block truncate font-ui text-xs font-medium",
+                          activa
+                            ? "text-amber-800 dark:text-amber-300"
+                            : "text-reading-light/80 dark:text-reading-dark/80",
+                        )}
+                      >
+                        {pub.publication.title || pub.symbol}
+                      </span>
+                      <span className="mt-0.5 block font-ui text-[10px] text-muted-light dark:text-muted-dark">
+                        {pub.symbol} · {pub.documents.length} documentos
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => void handleRemovePublication(pub.symbol)}
+                      aria-label={`Quitar ${pub.publication.title || pub.symbol}`}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-light transition-opacity hover:bg-red-50 hover:text-red-600 md:opacity-0 md:group-hover:opacity-100 dark:text-muted-dark dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                    >
+                      <IconTrash width={13} height={13} />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        </>
+      )}
 
       <Divider className="my-4" />
 
