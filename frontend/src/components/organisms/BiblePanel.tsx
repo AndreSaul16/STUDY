@@ -83,7 +83,7 @@ export function BiblePanel({ className }: BiblePanelProps) {
             onClick={() => setSelected(null)}
             aria-label="Volver a la lista de libros"
             className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-md",
+              "flex h-11 w-11 shrink-0 items-center justify-center rounded-md xl:h-9 xl:w-9 pointer-coarse:h-11 pointer-coarse:w-11",
               "text-muted-light hover:bg-paper-200 hover:text-reading-light",
               "dark:text-muted-dark dark:hover:bg-ink-50 dark:hover:text-reading-dark",
             )}

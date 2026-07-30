@@ -64,7 +64,11 @@ export function BottomNav() {
       className={cn(
         // Por encima del bottom sheet (z-110): con el panel abierto se tiene
         // que poder saltar de Biblia a Chat sin cerrarlo primero.
-        "fixed inset-x-0 bottom-0 z-[120] md:hidden",
+        //
+        // Sin `md:hidden`: quien decide si hay barra inferior es AppShell, que
+        // sabe si el layout es de una columna. Con la regla de ancho, un móvil
+        // en apaisado (844×390) usaba el layout móvil y se quedaba sin barra.
+        "fixed inset-x-0 bottom-0 z-[120]",
         "border-t border-seam-light bg-paper-50/95 backdrop-blur",
         "dark:border-seam-dark dark:bg-ink-100/95",
         "pb-[env(safe-area-inset-bottom)]",
@@ -81,7 +85,9 @@ export function BottomNav() {
                 onClick={() => go(item)}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "flex h-14 w-full flex-col items-center justify-center gap-1",
+                  // En apaisado la barra baja a 44px: con 390px de alto,
+                  // 56 para navegar es el 14% de la pantalla.
+                  "flex h-14 w-full flex-col items-center justify-center gap-1 short:h-11 short:gap-0.5",
                   "transition-colors",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber-500",
                   isActive

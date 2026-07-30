@@ -121,11 +121,11 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
   return (
     <div className={cn("relative flex h-full min-h-0 flex-col", className)}>
       {!embedded && (
-        <header className="flex h-14 shrink-0 items-center gap-1 border-b border-seam-light px-2 pt-[env(safe-area-inset-top)] dark:border-seam-dark">
+        <header className="flex h-14 shrink-0 items-center gap-1 border-b border-seam-light px-2 pt-[env(safe-area-inset-top)] short:h-11 dark:border-seam-dark">
           <button
             onClick={() => setDrawerOpen(true)}
             aria-label="Conversaciones"
-            className="flex h-11 w-11 items-center justify-center rounded-full text-muted-light dark:text-muted-dark"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-muted-light short:h-10 short:w-10 dark:text-muted-dark"
           >
             <IconGrip width={18} height={18} />
           </button>
@@ -139,7 +139,7 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
               onClick={() => exportConversation(title, messages)}
               aria-label="Exportar la conversación a Markdown"
               title="Exportar a .md"
-              className="flex h-11 w-11 items-center justify-center rounded-full text-muted-light dark:text-muted-dark"
+              className="flex h-11 w-11 items-center justify-center rounded-full text-muted-light short:h-10 short:w-10 dark:text-muted-dark"
             >
               <IconArrowDown width={17} height={17} />
             </button>
@@ -155,6 +155,11 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
         </header>
       )}
 
+      {/* La región de scroll va envuelta para que el botón "Ir al final" se
+          ancle a SU borde inferior. Antes era `absolute bottom-32` contra la
+          pantalla: con el composer crecido (o en apaisado) el botón caía
+          encima del textarea y tapaba lo que se estaba escribiendo. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -164,7 +169,7 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
         aria-label="Conversación"
         className={cn(
           "chat-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain",
-          "px-4 py-4",
+          "px-4 py-4 short:py-2",
         )}
       >
         {messages.length === 0 && !isStreaming && !error && (
@@ -225,8 +230,8 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
         <button
           onClick={() => scrollToBottom({ behavior: "smooth" })}
           className={cn(
-            "absolute bottom-32 left-1/2 z-10 flex h-11 -translate-x-1/2 items-center gap-1.5 rounded-full px-4",
-            "bg-reading-light font-ui text-xs text-paper-50 shadow-lg",
+            "absolute bottom-3 left-1/2 z-10 flex h-11 -translate-x-1/2 items-center gap-1.5 rounded-full px-4",
+            "bg-reading-light font-ui text-xs whitespace-nowrap text-paper-50 shadow-lg",
             "dark:bg-paper-50 dark:text-ink-200",
           )}
         >
@@ -234,6 +239,7 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
           Ir al final
         </button>
       )}
+      </div>
 
       {followUps.length > 0 && (
         <FollowUpChips
@@ -271,16 +277,16 @@ function EmptyState({
   onPick: (example: string) => void;
 }) {
   return (
-    <div className="mx-auto max-w-[46ch] py-8">
-      <h2 className="font-display text-2xl text-reading-light dark:text-reading-dark">
+    <div className="mx-auto max-w-[46ch] py-8 short:py-2">
+      <h2 className="font-display text-2xl text-reading-light short:text-xl dark:text-reading-dark">
         ¿Qué preparamos hoy?
       </h2>
-      <p className="mt-2 font-ui text-sm text-muted-light dark:text-muted-dark">
+      <p className="mt-2 font-ui text-sm text-muted-light short:hidden dark:text-muted-dark">
         Busco en la Biblia y en las publicaciones antes de responder, y te lo
         redacto con tu forma de escribir.
       </p>
 
-      <ul className="mt-6 space-y-2">
+      <ul className="mt-6 space-y-2 short:mt-3">
         {examples.slice(0, 3).map((example) => (
           <li key={example}>
             <button

@@ -55,7 +55,9 @@ export function ConversationsDrawer() {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex">
+    // z por encima de BottomNav (z-120): con z-50 la barra inferior se pintaba
+    // encima del cajón y partía en dos el botón "Nueva conversación".
+    <div className="fixed inset-0 z-[130] flex">
       <button
         aria-label="Cerrar conversaciones"
         onClick={() => setOpen(false)}

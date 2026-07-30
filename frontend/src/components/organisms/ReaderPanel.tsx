@@ -218,6 +218,9 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
         className={cn(
           "flex shrink-0 items-center justify-between gap-2",
           "px-3 py-2 sm:px-6 sm:py-3 lg:px-8",
+          // Apaisado: con 390px de alto, una cabecera de 68px es el 17% de la
+          // pantalla antes de empezar a leer.
+          "short:py-1 short:sm:py-1",
           "border-b border-seam-light dark:border-seam-dark",
           // Respeta el notch en móviles con pantalla completa.
           "pt-[max(0.5rem,env(safe-area-inset-top))]",
@@ -313,6 +316,7 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
           "flex-1 overflow-y-auto overflow-x-hidden",
           // Paddings fluidos: cómodos en móvil, generosos en pantalla grande.
           "px-4 py-6 sm:px-10 sm:py-10 lg:px-16 lg:py-14",
+          "short:py-3 short:sm:py-3 short:lg:py-3",
           // Hueco para la barra de navegación inferior en móvil.
           "pb-24 md:pb-14",
         )}

@@ -22,7 +22,10 @@ const VARIANTS: Record<Variant, string> = {
 const SIZES: Record<Size, string> = {
   sm: "h-8 px-3 text-xs tracking-wide",
   md: "h-10 px-4 text-sm tracking-wide",
-  icon: "h-9 w-9 p-0",
+  // 44px mientras la pantalla pueda ser táctil; 36 sólo en ventanas anchas
+  // con puntero fino. A 36px el botón de tema o el de buscar de la cabecera
+  // del lector se fallan con el pulgar en una tablet.
+  icon: "h-11 w-11 p-0 xl:h-9 xl:w-9 pointer-coarse:h-11 pointer-coarse:w-11",
 };
 
 export function Button({

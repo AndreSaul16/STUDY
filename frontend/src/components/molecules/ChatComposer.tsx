@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/utils/cn";
-import { useIsMobile } from "@/hooks/useMediaQuery";
+import { useIsMobile, useIsTouch } from "@/hooks/useMediaQuery";
 import { useReaderStore } from "@/store/readerStore";
 import { getDailyText } from "@/services/jwDailyClient";
 import { ModePicker } from "@/components/molecules/ModePicker";
@@ -50,21 +50,32 @@ export function ChatComposer({
   placeholder,
   className,
 }: ChatComposerProps) {
-  const isMobile = useIsMobile();
+  // "Táctil" y no "móvil": una tablet de 1024px también escribe con un
+  // teclado en pantalla, y ahí Enter-envía manda medio mensaje.
+  const isTouch = useIsMobile() || useIsTouch();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [attachOpen, setAttachOpen] = useState(false);
   const article = useReaderStore((s) => s.article);
 
   // Autoresize. Se recalcula también al vaciar el campo tras enviar.
+  //
+  // Con el campo vacío NO se mide: `scrollHeight` cuenta también el
+  // placeholder, y en una pantalla de 320px ese texto ocupa tres líneas, así
+  // que el composer arrancaba con 100px de alto sin que nadie hubiera escrito
+  // nada. Vacío se deja que mande la altura mínima de la clase.
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
+    if (!value) {
+      el.style.height = "";
+      return;
+    }
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
   }, [value]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isMobile) return; // El botón es el único envío en táctil.
+    if (isTouch) return; // El botón es el único envío en táctil.
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSend();
@@ -106,6 +117,8 @@ export function ChatComposer({
         "shrink-0 border-t border-seam-light bg-paper-50 dark:border-seam-dark dark:bg-ink-100",
         // El teclado móvil no encoge 100dvh: --kb-inset lo compensa.
         "px-3 pt-2 pb-[max(var(--kb-inset,0px),env(safe-area-inset-bottom),0.75rem)]",
+        // Apaisado: 390px de alto no admiten el mismo acolchado que 844.
+        "short:pt-1 short:pb-[max(var(--kb-inset,0px),env(safe-area-inset-bottom),0.25rem)]",
         className,
       )}
     >
@@ -127,8 +140,8 @@ export function ChatComposer({
         </div>
       )}
 
-      <div className="mb-2 flex items-center gap-2">
-        <ModePicker value={mode} onChange={onModeChange} />
+      <div className="mb-2 flex min-w-0 items-center gap-2 short:mb-1">
+        <ModePicker value={mode} onChange={onModeChange} className="min-w-0" />
       </div>
 
       <div className="flex items-end gap-2">
@@ -137,7 +150,7 @@ export function ChatComposer({
           aria-label="Añadir contexto"
           aria-expanded={attachOpen}
           className={cn(
-            "flex h-12 w-12 shrink-0 items-center justify-center rounded-full",
+            "flex h-12 w-12 shrink-0 items-center justify-center rounded-full short:h-10 short:w-10",
             "font-ui text-xl leading-none text-muted-light",
             "transition-transform duration-150 active:scale-95",
             "dark:text-muted-dark",
@@ -154,13 +167,20 @@ export function ChatComposer({
           onKeyDown={handleKeyDown}
           placeholder={placeholder ?? "Escribe tu pregunta…"}
           rows={1}
-          enterKeyHint={isMobile ? "enter" : "send"}
+          enterKeyHint={isTouch ? "enter" : "send"}
           autoCapitalize="sentences"
           autoCorrect="on"
           spellCheck
           inputMode="text"
           className={cn(
-            "min-h-[44px] max-h-[40dvh] flex-1 resize-none",
+            // El tope era 40dvh: en un móvil de 568px eso son 227px de caja
+            // de escribir y dos líneas de conversación visibles. Con el mínimo
+            // de los dos, el texto largo hace scroll dentro del campo y la
+            // conversación no desaparece.
+            // 48 y no 44: con `py-3` y una línea de 16px el contenido pide
+            // exactamente 48px. A 44 se veía media segunda línea del
+            // placeholder asomando por debajo, cortada.
+            "min-h-[48px] max-h-[min(40dvh,10rem)] flex-1 resize-none",
             "rounded-2xl bg-paper-100 px-4 py-3",
             // 16px exactos: por debajo, iOS hace zoom al enfocar el campo y
             // deja la vista descuadrada al volver.
@@ -176,7 +196,7 @@ export function ChatComposer({
             onClick={onCancel}
             aria-label="Detener la respuesta"
             className={cn(
-              "flex h-12 w-12 shrink-0 items-center justify-center rounded-full",
+              "flex h-12 w-12 shrink-0 items-center justify-center rounded-full short:h-10 short:w-10",
               "border border-seam-light text-reading-light",
               "transition-transform duration-150 active:scale-95",
               "dark:border-seam-dark dark:text-reading-dark",
@@ -190,7 +210,7 @@ export function ChatComposer({
             disabled={!value.trim()}
             aria-label="Enviar"
             className={cn(
-              "flex h-12 w-12 shrink-0 items-center justify-center rounded-full",
+              "flex h-12 w-12 shrink-0 items-center justify-center rounded-full short:h-10 short:w-10",
               "bg-amber-600 text-paper-50 dark:bg-amber-700",
               "transition-transform duration-150 active:scale-95",
               "disabled:pointer-events-none disabled:opacity-40",
@@ -212,7 +232,7 @@ export function ChatComposer({
         )}
       </div>
 
-      {!isMobile && (
+      {!isTouch && (
         <p className="mt-1.5 font-ui text-[10px] text-muted-light/60 dark:text-muted-dark/60">
           Enter para enviar · Shift+Enter para nueva línea
         </p>

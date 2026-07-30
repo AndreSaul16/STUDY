@@ -21,8 +21,11 @@ import { ResearchPanel } from "@/components/organisms/ResearchPanel";
 const REST_HEIGHT = 0.85;
 /** Arrastre hacia abajo, en px, a partir del cual se cierra al soltar. */
 const CLOSE_THRESHOLD = 120;
-/** Alto de la barra de navegación inferior, que queda por encima de la hoja. */
-const NAV_HEIGHT = "calc(3.5rem + env(safe-area-inset-bottom))";
+/**
+ * Alto de la barra de navegación inferior, que queda por encima de la hoja.
+ * Sale de `--nav-h` (index.css) porque en apaisado la barra se comprime.
+ */
+const NAV_HEIGHT = "var(--nav-h)";
 
 export function BottomSheet() {
   const open = useUIStore((s) => s.mobileSheetOpen);
@@ -90,7 +93,10 @@ export function BottomSheet() {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[110] md:hidden">
+    // Sin `md:hidden`, por lo mismo que BottomNav: en apaisado el layout es de
+    // una columna aunque la pantalla mida 844px de ancho, y la hoja es la
+    // única forma de llegar al panel de investigación.
+    <div className="fixed inset-0 z-[110]">
       <div
         className="absolute inset-0 bg-ink-400/40 backdrop-blur-[2px]"
         onClick={() => setOpen(false)}
@@ -139,7 +145,9 @@ export function BottomSheet() {
             onClick={() => setOpen(false)}
             aria-label="Cerrar panel"
             className={cn(
-              "absolute right-2 top-1.5 flex h-9 w-9 items-center justify-center rounded-full",
+              // 44px: la hoja es táctil por definición y el asa de arrastre
+              // ocupa el centro, así que fallar el cierre obliga a arrastrar.
+              "absolute right-1 top-0 flex h-11 w-11 items-center justify-center rounded-full",
               "text-muted-light hover:bg-paper-200",
               "dark:text-muted-dark dark:hover:bg-ink-50",
             )}

@@ -3,6 +3,11 @@
 /* Class-based dark mode (Tailwind 4 custom variant) */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Pantalla baja: móvil en apaisado (~390px de alto). Ahí la cabecera, el
+   composer y la barra inferior se comen la pantalla entera si conservan las
+   medidas del retrato, así que todo el cromo se comprime. */
+@custom-variant short (@media (max-height: 480px));
+
 /* ─── Design Tokens: "Escritorio de Lectura" ─── */
 @theme {
   /* Light: warm paper */
@@ -65,6 +70,19 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+  }
+
+  :root {
+    /* Alto real de la barra inferior. Lo consume BottomSheet, que se apoya
+       justo encima de ella; en apaisado la barra se comprime a 44px y sin esta
+       variable la hoja dejaba 12px de fondo asomando por debajo. */
+    --nav-h: calc(3.5rem + env(safe-area-inset-bottom));
+  }
+
+  @media (max-height: 480px) {
+    :root {
+      --nav-h: calc(2.75rem + env(safe-area-inset-bottom));
+    }
   }
 
   body {

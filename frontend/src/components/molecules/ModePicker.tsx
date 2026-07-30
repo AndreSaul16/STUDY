@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/utils/cn";
-import { useIsMobile, usePrefersReducedMotion } from "@/hooks/useMediaQuery";
+import { useIsDesktop, usePrefersReducedMotion } from "@/hooks/useMediaQuery";
 import { fetchChatModes } from "@/services/chatClient";
 import { FALLBACK_CHAT_MODES, type ChatMode } from "@/types/chat";
 import { IconChevronDown, IconClose } from "@/components/atoms/Icons";
@@ -49,19 +49,23 @@ interface ModePickerProps {
 /**
  * ModePicker — selector del modo de redacción.
  *
- * Móvil: un botón que abre una hoja inferior con filas de 56 px (el `hint` de
- * cada modo como subtítulo, que es lo que de verdad explica para qué sirve).
- * Escritorio: una fila de chips, que caben sin tapar nada.
+ * Móvil y tablet: un botón que abre una hoja inferior con filas de 56 px (el
+ * `hint` de cada modo como subtítulo, que es lo que de verdad explica para qué
+ * sirve). Escritorio holgado (≥1150px): una fila de chips.
+ *
+ * El corte está en 1150 y no en 768 porque en la franja de tablet la columna
+ * del chat mide ~420px: los cinco chips no caben, quedan en 28px de alto (por
+ * debajo del mínimo táctil) y hay que arrastrarlos de lado para ver el último.
  */
 export function ModePicker({ value, onChange, className }: ModePickerProps) {
   const modes = useChatModes();
-  const isMobile = useIsMobile();
+  const isDesktop = useIsDesktop();
   const reducedMotion = usePrefersReducedMotion();
   const [open, setOpen] = useState(false);
 
   const current = modes.find((m) => m.id === value) ?? modes[0];
 
-  if (!isMobile) {
+  if (isDesktop) {
     return (
       <div
         className={cn(
@@ -80,7 +84,7 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
             title={mode.hint}
             onClick={() => onChange(mode.id)}
             className={cn(
-              "shrink-0 rounded-full px-3 py-1.5 font-ui text-xs font-medium",
+              "flex h-9 shrink-0 items-center rounded-full px-3 font-ui text-xs font-medium",
               "transition-colors duration-200 ease-[var(--ease-out-expo)]",
               mode.id === value
                 ? "bg-amber-600 text-paper-50 dark:bg-amber-700"
@@ -101,19 +105,21 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
         aria-haspopup="dialog"
         aria-label={`Modo de redacción: ${current?.label ?? value}`}
         className={cn(
-          "flex h-11 shrink-0 items-center gap-1 rounded-full px-3",
+          "flex h-11 min-w-0 shrink items-center gap-1 rounded-full px-3 short:h-10",
           "bg-paper-200 font-ui text-xs font-medium text-reading-light",
           "active:scale-95 transition-transform duration-150",
           "dark:bg-ink-50 dark:text-reading-dark",
           className,
         )}
       >
-        <span className="max-w-[9rem] truncate">{current?.label ?? value}</span>
-        <IconChevronDown width={14} height={14} className="opacity-60" />
+        <span className="min-w-0 max-w-[9rem] truncate">{current?.label ?? value}</span>
+        <IconChevronDown width={14} height={14} className="shrink-0 opacity-60" />
       </button>
 
+      {/* z por encima de BottomNav (z-120): con z-50 la barra inferior tapaba
+          la última fila de la hoja y el modo de abajo no se podía elegir. */}
       {open && (
-        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+        <div className="fixed inset-0 z-[130] flex flex-col justify-end">
           <button
             aria-label="Cerrar"
             onClick={() => setOpen(false)}
@@ -124,7 +130,7 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
             role="dialog"
             aria-label="Modo de redacción"
             className={cn(
-              "relative max-h-[80dvh] overflow-y-auto rounded-t-2xl",
+              "relative max-h-[80dvh] overflow-y-auto rounded-t-2xl short:max-h-[92dvh]",
               "bg-paper-50 pb-[max(1rem,env(safe-area-inset-bottom))] dark:bg-ink-100",
               // Mismo criterio que BottomSheet: quien pide menos movimiento no
               // recibe el deslizamiento, aparece y ya.

@@ -249,7 +249,7 @@ function DailyTextPanel() {
           <button
             onClick={() => void openDailyText()}
             className={cn(
-              "mt-4 inline-flex min-h-[36px] items-center gap-1.5 rounded-md px-3 py-2",
+              "mt-4 inline-flex min-h-[44px] items-center gap-1.5 rounded-md px-3 py-2",
               "font-ui text-xs font-medium text-amber-700 dark:text-amber-400",
               "hover:bg-amber-50 dark:hover:bg-amber-800/20",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500",

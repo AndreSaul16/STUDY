@@ -27,7 +27,7 @@ export function HistoryNav({
         disabled={!canGoBack}
         aria-label="Atrás"
         className={cn(
-          "flex h-8 w-8 items-center justify-center rounded-md",
+          "flex h-11 w-11 items-center justify-center rounded-md xl:h-9 xl:w-9 pointer-coarse:h-11 pointer-coarse:w-11",
           "transition-colors",
           canGoBack
             ? "text-reading-light hover:bg-paper-200 dark:text-reading-dark dark:hover:bg-ink-50"
@@ -41,7 +41,7 @@ export function HistoryNav({
         disabled={!canGoForward}
         aria-label="Adelante"
         className={cn(
-          "flex h-8 w-8 items-center justify-center rounded-md",
+          "flex h-11 w-11 items-center justify-center rounded-md xl:h-9 xl:w-9 pointer-coarse:h-11 pointer-coarse:w-11",
           "transition-colors",
           canGoForward
             ? "text-reading-light hover:bg-paper-200 dark:text-reading-dark dark:hover:bg-ink-50"
