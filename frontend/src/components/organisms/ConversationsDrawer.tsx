@@ -4,7 +4,14 @@ import { usePrefersReducedMotion } from "@/hooks/useMediaQuery";
 import { useChatStore } from "@/store/chatStore";
 import { useChatModes } from "@/components/molecules/ModePicker";
 import { chatModeLabel } from "@/types/chat";
-import { IconClose, IconSearch, IconStar, IconStarFilled, IconTrash } from "@/components/atoms/Icons";
+import {
+  IconClose,
+  IconPencil,
+  IconSearch,
+  IconStar,
+  IconStarFilled,
+  IconTrash,
+} from "@/components/atoms/Icons";
 
 /** "hace 5 min", "ayer", "12 mar" — sin librería de fechas. */
 function relativeDate(seconds: number): string {
@@ -36,6 +43,25 @@ export function ConversationsDrawer() {
 
   const [query, setQuery] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Renombrar en línea, sin diálogo del navegador: `prompt()` está bloqueado en
+  // varios navegadores móviles y es intocable con un lector de pantalla.
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+
+  const commitRename = (conversationId: string) => {
+    const title = draftTitle.trim();
+    if (title) {
+      // El store solo sabe renombrar la conversación abierta; para renombrar
+      // cualquiera se abre primero. Es además lo que el usuario espera.
+      const store = useChatStore.getState();
+      if (store.conversationId !== conversationId) {
+        store.openConversation(conversationId);
+      }
+      useChatStore.getState().renameCurrent(title);
+    }
+    setRenaming(null);
+    setDraftTitle("");
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -119,26 +145,56 @@ export function ConversationsDrawer() {
                     active && "bg-amber-50 dark:bg-amber-800/20",
                   )}
                 >
-                  <button
-                    onClick={() =>
-                      useChatStore.getState().openConversation(conversation.conversationId)
-                    }
-                    className="flex min-h-[56px] min-w-0 flex-1 flex-col justify-center gap-0.5 px-3 py-2 text-left"
-                  >
-                    <span
-                      className={cn(
-                        "truncate font-ui text-sm",
-                        active
-                          ? "font-medium text-amber-800 dark:text-amber-300"
-                          : "text-reading-light dark:text-reading-dark",
-                      )}
+                  {renaming === conversation.conversationId ? (
+                    <input
+                      autoFocus
+                      value={draftTitle}
+                      onChange={(e) => setDraftTitle(e.target.value)}
+                      onBlur={() => commitRename(conversation.conversationId)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitRename(conversation.conversationId);
+                        if (e.key === "Escape") {
+                          setRenaming(null);
+                          setDraftTitle("");
+                        }
+                      }}
+                      aria-label="Nuevo título de la conversación"
+                      maxLength={80}
+                      className="min-h-[56px] min-w-0 flex-1 bg-transparent px-3 font-ui text-base text-reading-light outline-none sm:text-sm dark:text-reading-dark"
+                    />
+                  ) : (
+                    <button
+                      onClick={() =>
+                        useChatStore.getState().openConversation(conversation.conversationId)
+                      }
+                      className="flex min-h-[56px] min-w-0 flex-1 flex-col justify-center gap-0.5 px-3 py-2 text-left"
                     >
-                      {conversation.title}
-                    </span>
-                    <span className="truncate font-ui text-[11px] text-muted-light dark:text-muted-dark">
-                      {chatModeLabel(modes, conversation.mode)} ·{" "}
-                      {relativeDate(conversation.updatedAt)}
-                    </span>
+                      <span
+                        className={cn(
+                          "truncate font-ui text-sm",
+                          active
+                            ? "font-medium text-amber-800 dark:text-amber-300"
+                            : "text-reading-light dark:text-reading-dark",
+                        )}
+                      >
+                        {conversation.title}
+                      </span>
+                      <span className="truncate font-ui text-[11px] text-muted-light dark:text-muted-dark">
+                        {chatModeLabel(modes, conversation.mode)} ·{" "}
+                        {relativeDate(conversation.updatedAt)}
+                      </span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      setRenaming(conversation.conversationId);
+                      setDraftTitle(conversation.title);
+                    }}
+                    aria-label="Renombrar"
+                    className="flex w-11 items-center justify-center text-muted-light dark:text-muted-dark"
+                  >
+                    <IconPencil width={15} height={15} />
                   </button>
 
                   <button

@@ -5,6 +5,8 @@ import { exportDatabase, importDatabase } from "@/db/database";
 import { APP_VIEWS, RESEARCH_TABS, THEMES } from "@/types/domain";
 import type { ResearchTab } from "@/types/domain";
 import { Divider } from "@/components/atoms/Divider";
+import { AiSettingsSection } from "@/components/organisms/AiSettingsSection";
+import { ImagesSettingsRow } from "@/components/molecules/ImagesSettingsRow";
 import { useChatModes } from "@/components/molecules/ModePicker";
 import { useChatStore } from "@/store/chatStore";
 import {
@@ -108,6 +110,9 @@ export function MoreScreen({ className }: MoreScreenProps) {
         })}
       </ul>
 
+      {/* La configuración de IA va ANTES que la de la base local: es lo que
+          el usuario viene a tocar, y "Exportar" es de uso trimestral. */}
+      <AiSettingsSection />
       <Settings />
       </div>
     </div>
@@ -195,6 +200,8 @@ function Settings() {
             />
           </span>
         </label>
+
+        <ImagesSettingsRow />
 
         <button
           onClick={doExport}

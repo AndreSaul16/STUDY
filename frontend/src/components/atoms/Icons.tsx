@@ -126,6 +126,15 @@ export function IconTrash(p: IconProps) {
   );
 }
 
+export function IconPencil(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M4 20h4L20 8a2.8 2.8 0 0 0-4-4L4 16z" />
+      <path d="M14 6l4 4" />
+    </svg>
+  );
+}
+
 export function IconBook(p: IconProps) {
   return (
     <svg {...base} {...p}>

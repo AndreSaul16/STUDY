@@ -97,7 +97,11 @@ export async function fetchChatModes(): Promise<ChatModesResponse> {
     if (modes.length === 0) return fallback;
 
     return {
-      modes: modes.map((m) => ({ ...m, examples: m.examples.map(String) })),
+      modes: modes.map((m) => ({
+        ...m,
+        examples: m.examples.map(String),
+        deep: m.deep === true,
+      })),
       default: typeof raw.default === "string" ? raw.default : DEFAULT_CHAT_MODE,
     };
   } catch {

@@ -92,6 +92,7 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
             )}
           >
             {mode.label}
+            {mode.deep && <span className="ml-1 opacity-70">≈4 min</span>}
           </button>
         ))}
       </div>
@@ -178,6 +179,14 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
                     <span className="font-ui text-xs text-muted-light dark:text-muted-dark">
                       {mode.hint}
                     </span>
+                    {/* La investigación profunda tarda minutos y cuesta más:
+                        decirlo aquí evita que se elija por curiosidad. */}
+                    {mode.deep && (
+                      <span className="mt-0.5 font-ui text-[11px] text-amber-700 dark:text-amber-400">
+                        ≈4 min · consulta muchas más publicaciones; puedes
+                        cerrar la app y volver
+                      </span>
+                    )}
                   </button>
                 </li>
               ))}

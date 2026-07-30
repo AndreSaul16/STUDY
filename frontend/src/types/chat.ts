@@ -79,6 +79,12 @@ export interface ChatMode {
   label: string;
   hint: string;
   examples: string[];
+  /**
+   * Modo de investigación profunda: el backend responde con un `event: job` y
+   * el informe llega minutos después. Opcional porque un backend anterior no
+   * manda el campo.
+   */
+  deep?: boolean;
 }
 
 /**
@@ -138,6 +144,17 @@ export const FALLBACK_CHAT_MODES: ChatMode[] = [
       "Presentación de un discursante visitante",
       "Oración inicial para una reunión especial",
     ],
+  },
+  {
+    id: "investigacion",
+    label: "Investigación profunda",
+    hint: "Dime el tema y lo investigo a fondo (varios minutos)",
+    examples: [
+      "Todo lo que dice La Atalaya sobre el aguante",
+      "Estudio completo de Isaías 58",
+      "Investiga el trasfondo histórico de Ester",
+    ],
+    deep: true,
   },
 ];
 

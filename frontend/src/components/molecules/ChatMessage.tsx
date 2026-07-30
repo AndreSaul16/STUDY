@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/utils/cn";
 import { splitChatSegments } from "@/utils/chatSegments";
 import {
@@ -7,9 +7,19 @@ import {
   sourcesToPlainText,
 } from "@/utils/plainText";
 import { canShare, useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { proposeIllustrationPrompt } from "@/utils/illustrationPrompt";
 import { CopyButton } from "@/components/atoms/CopyButton";
 import { MarkdownWithRefs } from "@/components/atoms/MarkdownWithRefs";
+import { ChatImage } from "@/components/molecules/ChatImage";
+import { IllustrateSheet } from "@/components/molecules/IllustrateSheet";
 import { SourceChips } from "@/components/molecules/SourceChips";
+import {
+  listImagesForMessage,
+  type ChatImageRow,
+} from "@/db/repositories/imagesRepository";
+import { useAiSettingsStore } from "@/store/aiSettingsStore";
+import { useChatStore } from "@/store/chatStore";
+import { shortModelLabel } from "@/types/aiSettings";
 import type { ChatSource, ChatUiMessage } from "@/types/chat";
 
 interface ChatMessageProps {
@@ -85,7 +95,77 @@ export function ChatMessage({
           onRetry={onRetry}
         />
       )}
+
+      {!streaming && <MessageIllustrations message={message} />}
     </article>
+  );
+}
+
+// ─── Ilustraciones ───────────────────────────────────────────────
+
+/**
+ * Las ilustraciones de este mensaje, más el botón para generar una.
+ *
+ * Vive aparte del pie porque tiene estado propio (la hoja, la lista) y porque
+ * la mayoría de los mensajes no tienen ninguna: así el caso común no paga ni
+ * una consulta de más de la cuenta.
+ */
+function MessageIllustrations({ message }: { message: ChatUiMessage }) {
+  const conversationId = useChatStore((s) => s.conversationId);
+  const settings = useAiSettingsStore((s) => s.settings);
+  const providers = useAiSettingsStore((s) => s.providers);
+
+  const [images, setImages] = useState<ChatImageRow[]>([]);
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      setImages(listImagesForMessage(message.id));
+    } catch {
+      // Base aún no lista o mensaje en streaming: sin imágenes y sin ruido.
+    }
+  }, [message.id]);
+
+  const provider = providers.find((p) => p.id === settings.provider);
+  // Solo se ofrece si el proveedor activo genera imágenes: un botón que lleva
+  // a un error es peor que ningún botón.
+  const canIllustrate = Boolean(provider?.supports_images && conversationId);
+
+  if (!canIllustrate && images.length === 0) return null;
+
+  return (
+    <div className="max-w-[68ch]">
+      {images.map((image) => (
+        <ChatImage
+          key={image.imageId}
+          image={image}
+          onDeleted={(imageId) =>
+            setImages((current) => current.filter((i) => i.imageId !== imageId))
+          }
+          onRegenerate={() => setSheetOpen(true)}
+        />
+      ))}
+
+      {canIllustrate && (
+        <button
+          onClick={() => setSheetOpen(true)}
+          className="-ml-2 mt-1 inline-flex min-h-[44px] items-center gap-1.5 rounded-full px-3 font-ui text-xs font-medium text-muted-light hover:text-reading-light dark:text-muted-dark dark:hover:text-reading-dark"
+        >
+          {images.length > 0 ? "Otra ilustración" : "Ilustrar esta respuesta"}
+        </button>
+      )}
+
+      {conversationId && (
+        <IllustrateSheet
+          open={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          conversationId={conversationId}
+          messageId={message.id}
+          initialPrompt={proposeIllustrationPrompt(message.content)}
+          onGenerated={(image) => setImages((current) => [...current, image])}
+        />
+      )}
+    </div>
   );
 }
 
@@ -181,7 +261,34 @@ function MessageFooter({
       {sourcesOpen && message.sources.length > 0 && (
         <MessageSources sources={message.sources} />
       )}
+
+      <MessageMeta message={message} />
     </div>
+  );
+}
+
+/**
+ * Con qué se generó la respuesta: "gemini-3.5-flash · esfuerzo alto".
+ *
+ * Discreto y en el pie, pero presente: releyendo una conversación de hace un
+ * mes hay que poder saber si la escribió el modelo bueno o el barato. Un
+ * informe profundo además dice cuántas publicaciones leyó.
+ */
+function MessageMeta({ message }: { message: ChatUiMessage }) {
+  const meta = message.meta;
+  if (!meta?.model && !meta?.deep) return null;
+
+  const parts = [
+    meta.deep
+      ? `Informe · ${meta.docs ?? 0} publicaciones`
+      : shortModelLabel(meta.model ?? ""),
+    meta.effort ? `esfuerzo ${meta.effort}` : "",
+  ].filter(Boolean);
+
+  return (
+    <p className="mt-0.5 px-1 font-ui text-[10px] text-muted-light dark:text-muted-dark">
+      {parts.join(" · ")}
+    </p>
   );
 }
 

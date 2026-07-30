@@ -5,8 +5,10 @@ import {
   buildRequestMessages,
   CHAT_STREAM_ENDPOINT,
 } from "@/services/chatClient";
+import { followJob } from "@/services/researchClient";
 import { aiRequestBody, aiRequestHeaders } from "@/store/aiSettingsStore";
 import { useChatStore } from "@/store/chatStore";
+import { useResearchStore } from "@/store/researchStore";
 import type {
   ChatMessageMeta,
   ChatSource,
@@ -84,6 +86,106 @@ function parseStringList(raw: unknown): string[] {
   return raw.filter((x): x is string => typeof x === "string" && x.trim() !== "");
 }
 
+/**
+ * Sigue una investigación profunda hasta el final.
+ *
+ * El turno de chat ya se cerró: el backend respondió con un `event: job` y
+ * colgó. A partir de aquí el trabajo vive en el servidor y esta función se
+ * limita a volcar sus eventos al store, reconectando sola si hace falta.
+ *
+ * Cuando llega el `done`, el informe se guarda como un mensaje normal del
+ * asistente: así hereda copiar, compartir, exportar y los chips de fuentes sin
+ * una sola línea de código nueva.
+ */
+export async function trackResearchJob(
+  jobId: string,
+  conversationId: string,
+  question: string,
+  estimatedSeconds: number,
+  startFromEventId = 0,
+): Promise<void> {
+  const research = useResearchStore.getState();
+  if (startFromEventId === 0) {
+    research.start(jobId, conversationId, question, estimatedSeconds);
+  }
+
+  let answer = "";
+  let meta: ChatMessageMeta | undefined;
+  let sources: ChatSource[] = [];
+  let docs = 0;
+
+  await followJob({
+    jobId,
+    lastEventId: startFromEventId,
+    onGone: () => {
+      useResearchStore.getState().setError(
+        "Esa investigación ya no está en el servidor. Puedes volver a lanzarla.",
+      );
+      useResearchStore.getState().finish();
+      useChatStore.getState().abortTurn(answer);
+    },
+    onError: (message) => {
+      useResearchStore.getState().setError(message);
+    },
+    onEvent: (event) => {
+      const store = useResearchStore.getState();
+      if (typeof event.id === "number") store.setLastEventId(event.id);
+
+      switch (event.event) {
+        case "plan": {
+          const items = Array.isArray(event.data.items) ? event.data.items : [];
+          store.setPlan(
+            items.flatMap((item) => {
+              if (!item || typeof item !== "object") return [];
+              const i = item as Record<string, unknown>;
+              return typeof i.question === "string"
+                ? [{ id: Number(i.id) || 0, question: i.question }]
+                : [];
+            }),
+          );
+          break;
+        }
+        case "progress":
+          docs = Number(event.data.docs) || docs;
+          store.setProgress({
+            step: Number(event.data.step) || 0,
+            total: Number(event.data.total) || 0,
+            label: String(event.data.label ?? ""),
+            docs,
+            elapsedMs: Number(event.data.elapsed_ms) || 0,
+          });
+          break;
+        case "sources":
+          sources = parseSources(event.data.items);
+          useChatStore.getState().setPendingSources(sources);
+          break;
+        case "token":
+          answer += String(event.data.text ?? "");
+          useChatStore.getState().appendToken(answer);
+          break;
+        case "metadata":
+          meta = parseMeta(event.data);
+          break;
+        case "report":
+          docs = Number(event.data.docs) || docs;
+          meta = { ...(meta ?? {}), deep: true, docs };
+          break;
+        case "error":
+          store.setError(String(event.data.message ?? "La investigación falló."));
+          break;
+        case "done":
+          useChatStore
+            .getState()
+            .finishTurn(answer, [], { ...(meta ?? {}), deep: true, docs });
+          store.finish();
+          break;
+        default:
+          break;
+      }
+    },
+  });
+}
+
 /** Metadatos del evento `metadata`. Todo opcional: el backend puede ser viejo. */
 function parseMeta(raw: Record<string, unknown>): ChatMessageMeta | undefined {
   const text = (key: string): string | undefined =>
@@ -140,6 +242,7 @@ export function useChat(): UseChatReturn {
     let fullContent = "";
     let suggestions: string[] = [];
     let meta: ChatMessageMeta | undefined;
+    let deepJob: { jobId: string; estimatedSeconds: number } | null = null;
 
     try {
       const response = await fetch(CHAT_STREAM_ENDPOINT, {
@@ -229,6 +332,18 @@ export function useChat(): UseChatReturn {
                 chat.setError(String(parsed.data.message ?? "Unknown error"));
               }
               break;
+            case "job": {
+              // Modo profundo: el backend no responde con tokens sino con el
+              // id de un trabajo que tarda minutos. El turno de chat se cierra
+              // aquí y el seguimiento sigue por su cuenta.
+              const jobId = String(parsed.data.job_id ?? "");
+              if (!jobId) break;
+              deepJob = {
+                jobId,
+                estimatedSeconds: Number(parsed.data.estimated_seconds) || 240,
+              };
+              break;
+            }
             case "done":
               // Stream completado
               break;
@@ -237,6 +352,22 @@ export function useChat(): UseChatReturn {
               break;
           }
         }
+      }
+
+      if (deepJob) {
+        // El turno sigue "abierto" (isStreaming) a propósito: lo que llega
+        // ahora es el informe, y el composer debe seguir bloqueado.
+        const question =
+          [...useChatStore.getState().messages]
+            .reverse()
+            .find((m) => m.role === "user")?.content ?? "";
+        void trackResearchJob(
+          deepJob.jobId,
+          conversationId,
+          question,
+          deepJob.estimatedSeconds,
+        );
+        return;
       }
 
       if (mountedRef.current) {

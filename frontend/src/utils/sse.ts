@@ -8,6 +8,14 @@
 export interface ParsedSSEEvent {
   event: string;
   data: Record<string, unknown>;
+  /**
+   * Número del evento (línea `id:`), si el emisor lo manda.
+   *
+   * Solo lo usa la investigación profunda, que numera sus eventos para poder
+   * reanudar con `Last-Event-ID` tras un túnel o un cambio de red. El chat
+   * normal no lo emite y aquí queda `undefined`.
+   */
+  id?: number;
 }
 
 /**
@@ -17,6 +25,7 @@ export interface ParsedSSEEvent {
 export function parseSSEEvent(raw: string): ParsedSSEEvent | null {
   const lines = raw.split(/\r?\n/);
   let eventType = "";
+  let id: number | undefined;
   const dataParts: string[] = [];
 
   for (const line of lines) {
@@ -24,6 +33,9 @@ export function parseSSEEvent(raw: string): ParsedSSEEvent | null {
       eventType = line.slice(6).trim();
     } else if (line.startsWith("data:")) {
       dataParts.push(line.slice(5).trim());
+    } else if (line.startsWith("id:")) {
+      const parsed = Number.parseInt(line.slice(3).trim(), 10);
+      if (Number.isFinite(parsed)) id = parsed;
     }
   }
 
@@ -33,6 +45,7 @@ export function parseSSEEvent(raw: string): ParsedSSEEvent | null {
     return {
       event: eventType,
       data: JSON.parse(dataParts.join("\n")) as Record<string, unknown>,
+      ...(id === undefined ? {} : { id }),
     };
   } catch {
     return null;

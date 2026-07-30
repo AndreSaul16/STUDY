@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/utils/cn";
-import { useChat, TOOL_LABELS } from "@/hooks/useChat";
+import { useChat, TOOL_LABELS, trackResearchJob } from "@/hooks/useChat";
 import { useChatStore } from "@/store/chatStore";
 import { useStickToBottom } from "@/hooks/useStickToBottom";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
@@ -9,8 +9,13 @@ import { ChatComposer } from "@/components/molecules/ChatComposer";
 import { ChatMessage } from "@/components/molecules/ChatMessage";
 import { takePendingChatContext } from "@/components/molecules/ContextMenu";
 import { FollowUpChips } from "@/components/molecules/FollowUpChips";
+import { ModelQuickPicker } from "@/components/molecules/ModelQuickPicker";
+import { ResearchProgress } from "@/components/molecules/ResearchProgress";
 import { ConversationsDrawer } from "@/components/organisms/ConversationsDrawer";
+import { useAiSettingsStore } from "@/store/aiSettingsStore";
+import { useResearchStore } from "@/store/researchStore";
 import { conversationToMarkdown, slugify } from "@/utils/plainText";
+import { shortModelLabel } from "@/types/aiSettings";
 import { IconArrowDown, IconGrip } from "@/components/atoms/Icons";
 import type { ChatUiMessage, ToolActivity } from "@/types/chat";
 
@@ -66,8 +71,20 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
   const conversationId = useChatStore((s) => s.conversationId);
   const modes = useChatModes();
 
+  const aiSettings = useAiSettingsStore((s) => s.settings);
+  const hydrateAi = useAiSettingsStore((s) => s.hydrate);
+  const researchActive = useResearchStore((s) => s.jobId !== null);
+
   const [input, setInput] = useState("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const composerRef = useRef<HTMLDivElement>(null);
+
+  // El catálogo de proveedores se pide una vez: la cabecera necesita saber qué
+  // modelo está activo antes de que el usuario abra Ajustes.
+  useEffect(() => {
+    void hydrateAi();
+    useResearchStore.getState().hydrate();
+  }, [hydrateAi]);
 
   // Publica --kb-inset: sin esto el composer se queda debajo del teclado.
   useVisualViewport();
@@ -134,6 +151,23 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
             {title}
           </p>
 
+          {/* Acceso rápido al modelo y al esfuerzo. NO va dentro del
+              ModePicker: ese responde a "qué quiero escribir" y es la pieza
+              más delicada del responsive. */}
+          <button
+            onClick={() => setModelPickerOpen(true)}
+            aria-label="Modelo y esfuerzo"
+            aria-haspopup="dialog"
+            className="flex h-11 max-w-[7.5rem] shrink-0 items-center truncate rounded-full px-2 font-ui text-[11px] text-muted-light short:h-10 dark:text-muted-dark"
+          >
+            {[
+              shortModelLabel(
+                aiSettings.byProvider[aiSettings.provider]?.model ?? "",
+              ) || "Modelo",
+              aiSettings.effort,
+            ].join(" · ")}
+          </button>
+
           {messages.length > 0 && (
             <button
               onClick={() => exportConversation(title, messages)}
@@ -172,6 +206,8 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
           "px-4 py-4 short:py-2",
         )}
       >
+        <ResumeResearchBanner />
+
         {messages.length === 0 && !isStreaming && !error && (
           <EmptyState
             examples={currentMode?.examples ?? []}
@@ -191,7 +227,13 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
           />
         ))}
 
-        {isStreaming && !streamingContent && <ToolActivityTrail activity={activity} />}
+        {/* Durante una investigación profunda el rastro de herramientas no
+            basta: son minutos y hay un plan que enseñar. */}
+        {researchActive && <ResearchProgress />}
+
+        {isStreaming && !streamingContent && !researchActive && (
+          <ToolActivityTrail activity={activity} />
+        )}
 
         {isStreaming && streamingContent && (
           <div aria-live="polite" aria-atomic="false">
@@ -263,6 +305,63 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
       </div>
 
       {!embedded && <ConversationsDrawer />}
+
+      {!embedded && (
+        <ModelQuickPicker
+          open={modelPickerOpen}
+          onClose={() => setModelPickerOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Reanudar una investigación ──────────────────────────────────
+
+/**
+ * Banner de "Reanudar" para una investigación que quedó a medias.
+ *
+ * Los trabajos viven en la memoria del backend: cerrar la app a mitad de un
+ * informe de tres minutos, o un redeploy de Railway, dejan el seguimiento
+ * colgado. Como cada evento va numerado y el último visto se guarda en
+ * `localStorage`, reengancharse cuesta un botón y no repite lo ya leído.
+ */
+function ResumeResearchBanner() {
+  const resumable = useResearchStore((s) => s.resumable);
+  const active = useResearchStore((s) => s.jobId !== null);
+  const conversationId = useChatStore((s) => s.conversationId);
+
+  if (!resumable || active) return null;
+
+  return (
+    <div className="mb-3 max-w-[68ch] rounded-xl border border-amber-600/40 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-900/10">
+      <p className="font-ui text-xs text-reading-light dark:text-reading-dark">
+        Tienes una investigación a medias
+        {resumable.question ? `: «${resumable.question.slice(0, 60)}»` : ""}.
+      </p>
+      <div className="-ml-2 mt-1 flex flex-wrap items-center gap-1">
+        <button
+          onClick={() => {
+            useChatStore.getState().resumeTurn();
+            void trackResearchJob(
+              resumable.jobId,
+              resumable.conversationId ?? conversationId ?? "",
+              resumable.question,
+              240,
+              resumable.lastEventId,
+            );
+          }}
+          className="inline-flex min-h-[44px] items-center rounded-full px-3 font-ui text-xs font-medium text-amber-800 dark:text-amber-300"
+        >
+          Reanudar
+        </button>
+        <button
+          onClick={() => useResearchStore.getState().dismissResumable()}
+          className="inline-flex min-h-[44px] items-center rounded-full px-3 font-ui text-xs font-medium text-muted-light dark:text-muted-dark"
+        >
+          Descartar
+        </button>
+      </div>
     </div>
   );
 }
