@@ -62,10 +62,14 @@ export function MoreScreen({ className }: MoreScreenProps) {
     <div
       className={cn(
         "h-full overflow-y-auto overscroll-contain",
-        "px-4 pt-[max(1.5rem,env(safe-area-inset-top))] pb-24",
+        "px-4 pt-[max(1.5rem,env(safe-area-inset-top))] pb-24 short:pt-4 md:pb-10",
         className,
       )}
     >
+      {/* En escritorio esta pantalla también existe (el carril lateral lleva
+          hasta aquí), y a 1440px una rejilla de dos columnas a sangre completa
+          daría tarjetas de 700px. */}
+      <div className="mx-auto w-full max-w-3xl">
       <header>
         <p className="font-ui text-[10px] uppercase tracking-[0.25em] text-amber-700 dark:text-amber-500">
           Herramientas
@@ -76,7 +80,7 @@ export function MoreScreen({ className }: MoreScreenProps) {
         <Divider variant="amber" className="mt-4 w-16" />
       </header>
 
-      <ul className="mt-6 grid grid-cols-2 gap-3">
+      <ul className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
         {DESTINATIONS.map((destination) => {
           const Icon = destination.icon;
           return (
@@ -105,6 +109,7 @@ export function MoreScreen({ className }: MoreScreenProps) {
       </ul>
 
       <Settings />
+      </div>
     </div>
   );
 }
@@ -168,14 +173,14 @@ function Settings() {
         </button>
 
         <label className="flex min-h-[56px] items-center justify-between gap-3 px-4 py-3">
-          <span className="font-ui text-sm text-reading-light dark:text-reading-dark">
+          <span className="min-w-0 font-ui text-sm text-reading-light dark:text-reading-dark">
             Modo del chat por defecto
           </span>
-          <span className="relative flex items-center gap-1">
+          <span className="relative flex min-w-0 shrink-0 items-center gap-1">
             <select
               value={mode}
               onChange={(e) => setMode(e.target.value)}
-              className="appearance-none bg-transparent pr-5 text-right font-ui text-xs text-muted-light outline-none dark:text-muted-dark"
+              className="max-w-[9.5rem] appearance-none truncate bg-transparent pr-5 text-right font-ui text-xs text-muted-light outline-none dark:text-muted-dark"
             >
               {modes.map((m) => (
                 <option key={m.id} value={m.id}>

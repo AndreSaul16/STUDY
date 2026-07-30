@@ -16,12 +16,15 @@ interface UIState {
   mobileSheetOpen: boolean;
   /** Búsqueda interna del capítulo activa */
   searchOpen: boolean;
+  /** Panel de investigación visible en el split de escritorio */
+  researchOpen: boolean;
   toggleTheme: () => void;
   setTheme: (t: Theme) => void;
   setView: (v: AppView) => void;
   setActiveTab: (t: ResearchTab) => void;
   setMobileSheetOpen: (open: boolean) => void;
   setSearchOpen: (open: boolean) => void;
+  setResearchOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -36,6 +39,7 @@ export const useUIStore = create<UIState>()(
       activeTab: RESEARCH_TABS.BIBLE,
       mobileSheetOpen: false,
       searchOpen: false,
+      researchOpen: true,
 
       toggleTheme: () =>
         set((s) => ({
@@ -46,12 +50,17 @@ export const useUIStore = create<UIState>()(
       setActiveTab: (activeTab) => set({ activeTab }),
       setMobileSheetOpen: (mobileSheetOpen) => set({ mobileSheetOpen }),
       setSearchOpen: (searchOpen) => set({ searchOpen }),
+      setResearchOpen: (researchOpen) => set({ researchOpen }),
     }),
     {
       name: "study-ui",
       // `view` también: al volver a la app se reabre donde se estaba, que en
       // un móvil es la diferencia entre retomar y volver a empezar.
-      partialize: (s) => ({ theme: s.theme, view: s.view }),
+      partialize: (s) => ({
+        theme: s.theme,
+        view: s.view,
+        researchOpen: s.researchOpen,
+      }),
     },
   ),
 );

@@ -19,12 +19,15 @@ import {
   IconTrash,
   IconNote,
   IconBookmark,
+  IconClose,
 } from "@/components/atoms/Icons";
 import { RESEARCH_TABS, LOAD_STATES, HIGHLIGHT_COLORS } from "@/types/domain";
 import type { HighlightColor } from "@/types/domain";
 
 interface ResearchPanelProps {
   className?: string;
+  /** Si se pasa, la cabecera ofrece plegar el panel (split de escritorio). */
+  onCollapse?: () => void;
 }
 
 const MARK_DOT: Record<HighlightColor, string> = {
@@ -35,7 +38,7 @@ const MARK_DOT: Record<HighlightColor, string> = {
   [HIGHLIGHT_COLORS.ORANGE]: "bg-mark-orange",
 };
 
-export function ResearchPanel({ className }: ResearchPanelProps) {
+export function ResearchPanel({ className, onCollapse }: ResearchPanelProps) {
   const {
     activeReference,
     resolvedContent,
@@ -66,23 +69,35 @@ export function ResearchPanel({ className }: ResearchPanelProps) {
       )}
     >
       {/* ─── Header ─── */}
-      <header className="flex shrink-0 items-center justify-between gap-2 px-4 py-3 sm:py-3">
-        <div className="flex items-center gap-2">
+      <header className="flex shrink-0 items-center justify-between gap-2 px-2 py-2 sm:px-4 sm:py-3">
+        <div className="flex min-w-0 items-center gap-2">
           <IconBookmark
             width={16}
             height={16}
-            className="text-amber-700 dark:text-amber-400"
+            className="shrink-0 text-amber-700 dark:text-amber-400"
           />
-          <span className="font-ui text-xs font-medium uppercase tracking-[0.15em] text-reading-light dark:text-reading-dark">
+          <span className="truncate font-ui text-xs font-medium uppercase tracking-[0.15em] text-reading-light dark:text-reading-dark">
             Investigación
           </span>
         </div>
-        <HistoryNav
-          canGoBack={canGoBack}
-          canGoForward={canGoForward}
-          onBack={goBack}
-          onForward={goForward}
-        />
+        <div className="flex shrink-0 items-center gap-0.5">
+          <HistoryNav
+            canGoBack={canGoBack}
+            canGoForward={canGoForward}
+            onBack={goBack}
+            onForward={goForward}
+          />
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              aria-label="Plegar el panel de investigación"
+              title="Plegar el panel"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-light hover:bg-paper-200 hover:text-reading-light xl:h-9 xl:w-9 pointer-coarse:h-11 pointer-coarse:w-11 dark:text-muted-dark dark:hover:bg-ink-50 dark:hover:text-reading-dark"
+            >
+              <IconClose width={15} height={15} />
+            </button>
+          )}
+        </div>
       </header>
 
       <TabBar
