@@ -29,6 +29,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers.ai_router import router as ai_router
+from .routers.ai_settings_router import router as ai_settings_router
 from .routers.interop_router import router as interop_router
 from .routers.jwpub_router import router as jwpub_router
 from .routers.chat_router import router as chat_router
@@ -66,11 +67,15 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    # X-AI-Api-Key explícito además del comodín: algunos navegadores y proxies
+    # no aceptan "*" en la respuesta al preflight cuando hay credenciales, y sin
+    # esa cabecera el modo BYOK deja de funcionar en desarrollo sin decir por qué.
+    allow_headers=["*", "X-AI-Api-Key", "Content-Type", "Accept"],
 )
 
 # Routers
 app.include_router(ai_router)
+app.include_router(ai_settings_router)
 app.include_router(interop_router)
 app.include_router(jwpub_router)
 app.include_router(chat_router)

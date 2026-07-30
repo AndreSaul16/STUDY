@@ -1,0 +1,305 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "gpt-5.6-sol",
+      "object": "model",
+      "created": 1780000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "object": "model",
+      "created": 1779000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "object": "model",
+      "created": 1778000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-5.5",
+      "object": "model",
+      "created": 1760000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-5.5-mini",
+      "object": "model",
+      "created": 1759000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-5",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-5-mini",
+      "object": "model",
+      "created": 1739000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-5-nano",
+      "object": "model",
+      "created": 1738000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-7-preview",
+      "object": "model",
+      "created": 1790000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "o4-mini",
+      "object": "model",
+      "created": 1730000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "o3",
+      "object": "model",
+      "created": 1720000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "o3-pro",
+      "object": "model",
+      "created": 1721000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4.1",
+      "object": "model",
+      "created": 1710000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4.1-mini",
+      "object": "model",
+      "created": 1709000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4.1-nano",
+      "object": "model",
+      "created": 1708000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4o",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4o-mini",
+      "object": "model",
+      "created": 1699000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "chatgpt-4o-latest",
+      "object": "model",
+      "created": 1698000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4-turbo",
+      "object": "model",
+      "created": 1690000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-3.5-turbo",
+      "object": "model",
+      "created": 1680000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-3.5-turbo-instruct",
+      "object": "model",
+      "created": 1679000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4o-audio-preview",
+      "object": "model",
+      "created": 1697000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4o-realtime-preview",
+      "object": "model",
+      "created": 1696000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4o-mini-audio-preview",
+      "object": "model",
+      "created": 1695000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-audio",
+      "object": "model",
+      "created": 1694000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-realtime",
+      "object": "model",
+      "created": 1693000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "tts-1",
+      "object": "model",
+      "created": 1670000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "tts-1-hd",
+      "object": "model",
+      "created": 1669000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4o-mini-tts",
+      "object": "model",
+      "created": 1668000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "whisper-1",
+      "object": "model",
+      "created": 1660000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4o-transcribe",
+      "object": "model",
+      "created": 1659000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "text-embedding-3-small",
+      "object": "model",
+      "created": 1650000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "text-embedding-3-large",
+      "object": "model",
+      "created": 1649000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "text-embedding-ada-002",
+      "object": "model",
+      "created": 1648000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "omni-moderation-latest",
+      "object": "model",
+      "created": 1640000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "text-moderation-stable",
+      "object": "model",
+      "created": 1639000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "dall-e-2",
+      "object": "model",
+      "created": 1630000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "dall-e-3",
+      "object": "model",
+      "created": 1631000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-image-1",
+      "object": "model",
+      "created": 1632000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-image-1-mini",
+      "object": "model",
+      "created": 1633000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-image-1.5",
+      "object": "model",
+      "created": 1634000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-image-2",
+      "object": "model",
+      "created": 1635000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "sora-2",
+      "object": "model",
+      "created": 1636000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "o3-deep-research",
+      "object": "model",
+      "created": 1722000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "o4-mini-deep-research",
+      "object": "model",
+      "created": 1731000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "codex-mini-latest",
+      "object": "model",
+      "created": 1725000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-4o-search-preview",
+      "object": "model",
+      "created": 1692000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "computer-use-preview",
+      "object": "model",
+      "created": 1691000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "gpt-oss-120b",
+      "object": "model",
+      "created": 1726000000,
+      "owned_by": "openai"
+    },
+    {
+      "id": "llama-guard-4-12b",
+      "object": "model",
+      "created": 1727000000,
+      "owned_by": "openai"
+    }
+  ]
+}
