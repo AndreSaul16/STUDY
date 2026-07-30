@@ -44,6 +44,9 @@ class ChatModeDTO(BaseModel):
     label: str
     hint: str
     examples: List[str]
+    #: Modo de investigación profunda: responde con un `event: job` y una
+    #: espera de minutos, no con tokens. Un cliente antiguo lo ignora.
+    deep: bool = False
 
 
 class ChatModesResponse(BaseModel):

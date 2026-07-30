@@ -34,14 +34,22 @@ class TestGetMode:
 
 
 class TestModeSpecs:
-    def test_hay_cinco_modos(self):
+    def test_estan_los_seis_modos(self):
         assert set(CHAT_MODES) == {
             "analisis",
             "comentario",
             "ilustracion",
             "discurso",
             "presentacion",
+            "investigacion",
         }
+
+    def test_solo_la_investigacion_es_un_modo_profundo(self):
+        # `deep` cambia el contrato del turno: en vez de tokens llega un
+        # `event: job`. El cliente lo necesita saber ANTES de enviar.
+        profundos = {mode_id for mode_id, spec in CHAT_MODES.items() if spec.deep}
+
+        assert profundos == {"investigacion"}
 
     @pytest.mark.parametrize("mode_id", sorted(CHAT_MODES))
     def test_invariantes_de_cada_modo(self, mode_id):
@@ -68,7 +76,7 @@ class TestListModes:
 
         assert len(modes) == len(CHAT_MODES)
         for entry in modes:
-            assert set(entry) == {"id", "label", "hint", "examples"}
+            assert set(entry) == {"id", "label", "hint", "examples", "deep"}
             assert isinstance(entry["examples"], list)
 
     def test_el_prompt_no_viaja_al_cliente(self):

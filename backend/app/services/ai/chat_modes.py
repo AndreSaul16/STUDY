@@ -40,6 +40,14 @@ class ModeSpec:
     """Sugerencias de respaldo si falla la generación dinámica."""
     examples: tuple[str, ...]
     """Ejemplos de arranque para la pantalla vacía."""
+    deep: bool = False
+    """
+    Modo de investigación profunda: no se resuelve dentro de una petición.
+
+    El cliente lo necesita saber ANTES de enviar, porque estos modos responden
+    con un ``event: job`` y una espera de minutos en vez de con tokens. Un
+    cliente antiguo que no lea este campo simplemente no ofrecerá el modo.
+    """
 
     def to_dict(self) -> dict:
         """DTO para el cliente. El ``prompt`` NO viaja: es interno."""
@@ -48,6 +56,7 @@ class ModeSpec:
             "label": self.label,
             "hint": self.hint,
             "examples": list(self.examples),
+            "deep": self.deep,
         }
 
 
@@ -192,6 +201,33 @@ FORMATO DE SALIDA:
 """
 
 
+_INVESTIGACION_PROMPT = """\
+## MODO: INVESTIGACIÓN PROFUNDA
+
+Entregas un informe documentado sobre el tema que te ha dado el usuario, tras
+haber consultado MUCHAS publicaciones (no dos ni tres).
+
+FORMATO DE SALIDA:
+
+1. "## Resumen ejecutivo" — de 5 a 8 líneas con lo esencial, escrito para
+   alguien que solo va a leer eso.
+2. Secciones con encabezados de Markdown (##), una por cada bloque temático que
+   hayas investigado. Dentro, párrafos cortos y viñetas.
+3. CADA afirmación relevante lleva su fuente entre paréntesis, con publicación,
+   fecha y página o párrafo: "(La Atalaya, 15 de mayo de 2015, pág. 12, párr. 4)",
+   "(Isaías 58:12)". Una afirmación sin fuente es un error del informe.
+4. "## Lo que no encontré" — qué preguntas se quedaron sin respuesta en las
+   publicaciones consultadas. Esta sección es OBLIGATORIA aunque esté vacía
+   ("No quedaron huecos relevantes"). Decir lo que falta es parte del trabajo.
+5. "## Fuentes consultadas" — lista de todo lo que abriste, una línea por
+   publicación.
+
+PROHIBIDO rellenar con conocimiento general, con lo que "se suele decir" o con
+razonamientos propios presentados como si vinieran de las publicaciones. Si una
+sub-pregunta no tiene respuesta en lo consultado, va a "Lo que no encontré".\
+"""
+
+
 CHAT_MODES: dict[str, ModeSpec] = {
     "analisis": ModeSpec(
         id="analisis",
@@ -283,7 +319,33 @@ CHAT_MODES: dict[str, ModeSpec] = {
             "Oración inicial para una reunión especial",
         ),
     ),
+    # Va el último a propósito: es el más caro y el más lento, y no debe ser lo
+    # primero que se pruebe por curiosidad.
+    "investigacion": ModeSpec(
+        id="investigacion",
+        label="Investigación profunda",
+        hint="Dime el tema y lo investigo a fondo (varios minutos)",
+        prompt=_INVESTIGACION_PROMPT,
+        max_tokens=6000,
+        min_tool_rounds=6,
+        followups=(
+            "Profundiza en el punto 2",
+            "Dame el resumen para un discurso",
+            "¿Qué publicaciones no has consultado?",
+        ),
+        examples=(
+            "Todo lo que dice La Atalaya sobre el aguante",
+            "Estudio completo de Isaías 58",
+            "Investiga el trasfondo histórico de Ester",
+        ),
+        deep=True,
+    ),
 }
+
+
+def deep_modes() -> set[str]:
+    """Ids de los modos que se resuelven en segundo plano."""
+    return {spec.id for spec in CHAT_MODES.values() if spec.deep}
 
 
 def get_mode(mode_id: str | None) -> ModeSpec:

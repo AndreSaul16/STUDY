@@ -36,6 +36,7 @@ from .routers.chat_router import router as chat_router
 from .routers.images_router import router as images_router
 from .routers.jw_router import router as jw_router
 from .routers.references_router import router as references_router
+from .routers.research_router import router as research_router
 from .services.ai.mcp_bridge import shutdown_mcp_bridge
 
 APP_VERSION = "0.3.0"
@@ -83,6 +84,7 @@ app.include_router(chat_router)
 app.include_router(images_router)
 app.include_router(jw_router)
 app.include_router(references_router)
+app.include_router(research_router)
 
 
 # ---- Health & API routes (must be defined BEFORE SPA catch-all) ----

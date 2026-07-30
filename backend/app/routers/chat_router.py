@@ -12,6 +12,7 @@ navegador) y nunca por el cuerpo persistido. Se usa para construir el runtime
 de esta petición y se descarta. El backend no la guarda, no la loguea y no la
 devuelve en ninguna respuesta.
 """
+import json
 import logging
 import os
 
@@ -23,7 +24,7 @@ from ..schemas.chat_schemas import (
     ChatHealthResponse,
     ChatModesResponse,
 )
-from ..services.ai.chat_modes import DEFAULT_MODE, list_modes
+from ..services.ai.chat_modes import DEFAULT_MODE, get_mode, list_modes
 from ..services.ai.chat_providers import (
     build_runtime,
     has_server_key,
@@ -40,6 +41,12 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 #: Cabecera por la que viaja la key del usuario. Ver ADR-3 del plan.
 API_KEY_HEADER = "X-AI-Api-Key"
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -110,6 +117,40 @@ async def chat_stream(chat_request: ChatRequest, request: Request):
 
     messages = [{"role": m.role, "content": m.content} for m in chat_request.messages]
 
+    # Los modos profundos no caben en una petición: tardan minutos y cualquier
+    # proxy cortaría el stream. Se responde con el id del trabajo y se cierra.
+    # Un cliente antiguo ignora el evento `job` y ve un turno vacío, que es
+    # exactamente lo que puede hacer con un modo que no conoce.
+    if get_mode(chat_request.mode).deep:
+        from ..services.ai.research_service import (
+            JobLimitReached,
+            estimated_seconds,
+            start_job,
+        )
+
+        try:
+            job = start_job(
+                service,
+                runtime,
+                messages,
+                chat_request.mode,
+                chat_request.conversation_id,
+            )
+        except JobLimitReached as exc:
+            raise HTTPException(429, str(exc))
+
+        payload = json.dumps(
+            {"job_id": job.job_id, "estimated_seconds": estimated_seconds()}
+        )
+
+        async def job_generator():
+            yield f"event: job\ndata: {payload}\n\n"
+            yield 'event: done\ndata: {"total_tokens": 0, "elapsed_ms": 0}\n\n'
+
+        return StreamingResponse(
+            job_generator(), media_type="text/event-stream", headers=_SSE_HEADERS
+        )
+
     async def event_generator():
         try:
             async for event in service.chat_stream(
@@ -124,13 +165,7 @@ async def chat_stream(chat_request: ChatRequest, request: Request):
             yield 'event: done\ndata: {"total_tokens": 0, "elapsed_ms": 0}\n\n'
 
     return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS
     )
 
 

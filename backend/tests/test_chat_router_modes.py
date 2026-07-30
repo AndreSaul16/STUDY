@@ -49,10 +49,10 @@ class TestChatModes:
         assert payload["default"] == "analisis"
         assert payload["default"] == DEFAULT_MODE
 
-    def test_devuelve_los_cinco_modos(self, client):
+    def test_devuelve_todos_los_modos(self, client):
         payload = client.get("/api/chat/modes").json()
 
-        assert len(payload["modes"]) == 5
+        assert len(payload["modes"]) == len(CHAT_MODES)
         assert {m["id"] for m in payload["modes"]} == set(CHAT_MODES)
 
     def test_ningun_modo_expone_su_prompt(self, client):
@@ -60,7 +60,7 @@ class TestChatModes:
 
         for mode in payload["modes"]:
             assert "prompt" not in mode
-            assert set(mode) == {"id", "label", "hint", "examples"}
+            assert set(mode) == {"id", "label", "hint", "examples", "deep"}
 
     def test_cada_modo_trae_ejemplos_para_la_pantalla_vacia(self, client):
         payload = client.get("/api/chat/modes").json()
