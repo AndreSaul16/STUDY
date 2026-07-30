@@ -18,6 +18,7 @@ import {
   IconSun,
   IconMoon,
   IconHome,
+  IconChat,
   IconArrowLeft,
   IconArrowRight,
 } from "@/components/atoms/Icons";
@@ -28,6 +29,7 @@ import { ContextMenu } from "@/components/molecules/ContextMenu";
 import { NoteEditor } from "@/components/molecules/NoteEditor";
 import { BlockRenderer } from "@/components/organisms/BlockRenderer";
 import { HomeScreen } from "@/components/organisms/HomeScreen";
+import { APP_VIEWS } from "@/types/domain";
 import type { HighlightColor } from "@/types/domain";
 
 interface ReaderPanelProps {
@@ -54,6 +56,7 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
   const toggleTheme = useUIStore((s) => s.toggleTheme);
   const searchOpen = useUIStore((s) => s.searchOpen);
   const setSearchOpen = useUIStore((s) => s.setSearchOpen);
+  const setView = useUIStore((s) => s.setView);
 
   const scrollRef = useRef<HTMLElement>(null);
   const [pendingNoteSelection, setPendingNoteSelection] =
@@ -221,6 +224,19 @@ export function ReaderPanel({ className }: ReaderPanelProps) {
         )}
       >
         <div className="flex min-w-0 items-center gap-2">
+          {/* Volver al chat desde la lectura. En escritorio no hay barra
+              inferior, así que sin esto la vista de lectura sería un callejón
+              sin salida cuando hay un artículo abierto. */}
+          <Tooltip content="Ir al chat" side="bottom">
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label="Ir al chat"
+              onClick={() => setView(APP_VIEWS.CHAT)}
+            >
+              <IconChat width={16} height={16} />
+            </Button>
+          </Tooltip>
           {article && (
             <Tooltip content="Inicio" side="bottom">
               <Button

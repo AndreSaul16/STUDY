@@ -129,6 +129,23 @@ export const RESEARCH_TABS = {
 
 export type ResearchTab = (typeof RESEARCH_TABS)[keyof typeof RESEARCH_TABS];
 
+/**
+ * Destinos de primer nivel de la app.
+ *
+ * Distinto de RESEARCH_TABS: aquello son las pestañas del panel de
+ * investigación (que sigue igual); esto es dónde está el usuario. El chat es
+ * el primero y el destino por defecto porque es el núcleo de la app, no una
+ * pestaña novena de diez dentro de un bottom sheet.
+ */
+export const APP_VIEWS = {
+  CHAT: "chat",
+  READ: "read",
+  BIBLE: "bible",
+  MORE: "more",
+} as const;
+
+export type AppView = (typeof APP_VIEWS)[keyof typeof APP_VIEWS];
+
 export const THEMES = {
   LIGHT: "light",
   DARK: "dark",

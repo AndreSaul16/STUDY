@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/utils/cn";
 import { useChat, TOOL_LABELS } from "@/hooks/useChat";
 import { useChatStore } from "@/store/chatStore";
@@ -57,6 +57,14 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
     streamingContent,
     activity.length,
   ]);
+
+  // Repulsar "Chat" en la barra inferior baja al final de la conversación.
+  // Evento del DOM y no una prop: la barra vive fuera de este árbol.
+  useEffect(() => {
+    const onJump = () => scrollToBottom({ behavior: "smooth" });
+    window.addEventListener("study:chat-scroll-bottom", onJump);
+    return () => window.removeEventListener("study:chat-scroll-bottom", onJump);
+  }, [scrollToBottom]);
 
   const title =
     conversations.find((c) => c.conversationId === conversationId)?.title ??

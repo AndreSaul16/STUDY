@@ -24,6 +24,22 @@ const TABS: { id: ResearchTab; label: string }[] = [
 ];
 
 /**
+ * Las que se listan por defecto. Las otras cinco siguen existiendo y
+ * `ResearchPanel` las sabe renderizar: se llega a ellas desde "Más".
+ *
+ * Con diez pestañas en una fila con scroll horizontal, nadie llegaba a la
+ * séptima. No se borran del array para que `activeTab` pueda seguir valiendo
+ * "chat" o "notes" sin dejar el panel en blanco.
+ */
+const PRIMARY_TABS: ResearchTab[] = [
+  RESEARCH_TABS.BIBLE,
+  RESEARCH_TABS.SEARCH,
+  RESEARCH_TABS.REFERENCE,
+  RESEARCH_TABS.LIBRARY,
+  RESEARCH_TABS.ANNOTATIONS,
+];
+
+/**
  * TabBar — pestañas del panel derecho.
  *
  * Estilo editorial: subrayado ámbar en la activa, no un pill genérico.
@@ -59,7 +75,11 @@ export function TabBar({ active, onChange, counts = {} }: TabBarProps) {
           "scroll-smooth px-1",
         )}
       >
-        {TABS.map((tab) => {
+        {/* La activa se lista aunque no sea primaria: si `activeTab` vale
+            "chat" o "notes", la barra tiene que reflejar dónde se está. */}
+        {TABS.filter(
+          (tab) => PRIMARY_TABS.includes(tab.id) || tab.id === active,
+        ).map((tab) => {
           const isActive = tab.id === active;
           const count = counts[tab.id];
           return (

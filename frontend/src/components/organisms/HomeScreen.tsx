@@ -8,9 +8,14 @@ import {
   openDailyText,
   resumeLastRead,
 } from "@/services/readerActions";
-import { RESEARCH_TABS } from "@/types/domain";
+import { APP_VIEWS, RESEARCH_TABS } from "@/types/domain";
 import { Divider } from "@/components/atoms/Divider";
-import { IconBook, IconBookmark, IconArrowRight } from "@/components/atoms/Icons";
+import {
+  IconBook,
+  IconBookmark,
+  IconChat,
+  IconArrowRight,
+} from "@/components/atoms/Icons";
 
 interface HomeScreenProps {
   className?: string;
@@ -32,6 +37,7 @@ export function HomeScreen({ className }: HomeScreenProps) {
   const error = useReaderStore((s) => s.error);
   const setActiveTab = useUIStore((s) => s.setActiveTab);
   const setMobileSheetOpen = useUIStore((s) => s.setMobileSheetOpen);
+  const setView = useUIStore((s) => s.setView);
 
   const openBibleTab = () => {
     setActiveTab(RESEARCH_TABS.BIBLE);
@@ -51,7 +57,7 @@ export function HomeScreen({ className }: HomeScreenProps) {
           Escritorio de lectura
         </p>
         <h1 className="mt-2 font-display text-4xl leading-[1.05] text-reading-light dark:text-reading-dark sm:text-5xl">
-          ¿Qué vas a estudiar hoy?
+          Lectura
         </h1>
         <Divider variant="amber" className="mt-4 w-16" />
       </header>
@@ -66,6 +72,17 @@ export function HomeScreen({ className }: HomeScreenProps) {
       )}
 
       <div className="mt-8 space-y-4">
+        {/* El chat es el núcleo de la app; desde la lectura tiene que estar a
+            un toque, no escondido en una pestaña del panel derecho. */}
+        <ActionCard
+          eyebrow="Asistente"
+          title="Preguntar a la IA"
+          hint="Busca en las publicaciones y te lo redacta"
+          icon={<IconChat width={18} height={18} />}
+          onClick={() => setView(APP_VIEWS.CHAT)}
+          emphasis
+        />
+
         {lastRead && (
           <ActionCard
             eyebrow="Continuar"
@@ -77,7 +94,6 @@ export function HomeScreen({ className }: HomeScreenProps) {
             }
             icon={<IconBookmark width={18} height={18} />}
             onClick={() => void resumeLastRead()}
-            emphasis
           />
         )}
 

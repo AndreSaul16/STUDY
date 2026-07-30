@@ -1,13 +1,16 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
+  AppView,
   Theme,
   ResearchTab,
 } from "@/types/domain";
-import { THEMES, RESEARCH_TABS } from "@/types/domain";
+import { APP_VIEWS, THEMES, RESEARCH_TABS } from "@/types/domain";
 
 interface UIState {
   theme: Theme;
+  /** Destino de primer nivel: chat, lectura, biblia o más. */
+  view: AppView;
   activeTab: ResearchTab;
   /** Panel derecho visible en mobile (bottom sheet abierto) */
   mobileSheetOpen: boolean;
@@ -15,6 +18,7 @@ interface UIState {
   searchOpen: boolean;
   toggleTheme: () => void;
   setTheme: (t: Theme) => void;
+  setView: (v: AppView) => void;
   setActiveTab: (t: ResearchTab) => void;
   setMobileSheetOpen: (open: boolean) => void;
   setSearchOpen: (open: boolean) => void;
@@ -24,6 +28,8 @@ export const useUIStore = create<UIState>()(
   persist(
     (set) => ({
       theme: THEMES.LIGHT,
+      // El chat es el producto: la app abre ahí.
+      view: APP_VIEWS.CHAT,
       // Biblia y no Referencia: al abrir la app no hay ninguna referencia
       // activa, así que el panel arrancaba en un estado vacío. El índice
       // bíblico es accionable desde el primer segundo.
@@ -36,13 +42,16 @@ export const useUIStore = create<UIState>()(
           theme: s.theme === THEMES.LIGHT ? THEMES.DARK : THEMES.LIGHT,
         })),
       setTheme: (theme) => set({ theme }),
+      setView: (view) => set({ view }),
       setActiveTab: (activeTab) => set({ activeTab }),
       setMobileSheetOpen: (mobileSheetOpen) => set({ mobileSheetOpen }),
       setSearchOpen: (searchOpen) => set({ searchOpen }),
     }),
     {
       name: "study-ui",
-      partialize: (s) => ({ theme: s.theme }),
+      // `view` también: al volver a la app se reabre donde se estaba, que en
+      // un móvil es la diferencia entre retomar y volver a empezar.
+      partialize: (s) => ({ theme: s.theme, view: s.view }),
     },
   ),
 );

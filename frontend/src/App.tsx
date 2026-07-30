@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useUIStore } from "@/store/uiStore";
 import { useChatStore } from "@/store/chatStore";
 import { useDatabase } from "@/hooks/useDatabase";
-import { SplitLayout } from "@/components/templates/SplitLayout";
+import { AppShell } from "@/components/templates/AppShell";
 
 export default function App() {
   const theme = useUIStore((s) => s.theme);
@@ -65,5 +65,5 @@ export default function App() {
     );
   }
 
-  return <SplitLayout />;
+  return <AppShell />;
 }
