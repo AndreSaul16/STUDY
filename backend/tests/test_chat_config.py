@@ -57,6 +57,58 @@ class TestReasoningEffort:
         assert module.OPENAI_REASONING_EFFORT == "high"
 
 
+class TestConfiguracionDeLaInvestigacion:
+    """Las CHAT_* gobiernan cuánto investiga el chat. Basura → default."""
+
+    def test_los_defaults_cuando_no_hay_nada_configurado(self, monkeypatch):
+        for var in ("CHAT_MAX_TOOL_ROUNDS", "CHAT_RESEARCH_BUDGET_SECONDS", "CHAT_FOLLOWUPS"):
+            monkeypatch.delenv(var, raising=False)
+
+        module = _reload_chat_service(monkeypatch)
+
+        assert module.CHAT_MAX_TOOL_ROUNDS == 5
+        assert module.CHAT_RESEARCH_BUDGET_SECONDS == 75
+        assert module.CHAT_FOLLOWUPS is True
+
+    def test_los_valores_configurados_se_respetan(self, monkeypatch):
+        module = _reload_chat_service(
+            monkeypatch,
+            CHAT_MAX_TOOL_ROUNDS="3",
+            CHAT_RESEARCH_BUDGET_SECONDS="120",
+            CHAT_FOLLOWUPS="0",
+        )
+
+        assert module.CHAT_MAX_TOOL_ROUNDS == 3
+        assert module.CHAT_RESEARCH_BUDGET_SECONDS == 120
+        assert module.CHAT_FOLLOWUPS is False
+
+    def test_basura_degrada_al_default_en_vez_de_tumbar_el_arranque(self, monkeypatch):
+        module = _reload_chat_service(
+            monkeypatch,
+            CHAT_MAX_TOOL_ROUNDS="abc",
+            CHAT_RESEARCH_BUDGET_SECONDS="",
+            CHAT_FOLLOWUPS="quizá",
+        )
+
+        assert module.CHAT_MAX_TOOL_ROUNDS == 5
+        assert module.CHAT_RESEARCH_BUDGET_SECONDS == 75
+        assert module.CHAT_FOLLOWUPS is True
+
+    def test_los_valores_fuera_de_rango_se_acotan(self, monkeypatch):
+        # 40 rondas de tools serían minutos de latencia y un coste absurdo.
+        module = _reload_chat_service(
+            monkeypatch, CHAT_MAX_TOOL_ROUNDS="40", CHAT_RESEARCH_BUDGET_SECONDS="1"
+        )
+
+        assert module.CHAT_MAX_TOOL_ROUNDS == 10
+        assert module.CHAT_RESEARCH_BUDGET_SECONDS == 10
+
+    def test_max_tool_rounds_mantiene_el_alias_historico(self, monkeypatch):
+        module = _reload_chat_service(monkeypatch, CHAT_MAX_TOOL_ROUNDS="4")
+
+        assert module.MAX_TOOL_ROUNDS == module.CHAT_MAX_TOOL_ROUNDS == 4
+
+
 class TestHerramientasNativas:
     def test_las_nativas_estan_siempre_disponibles(self):
         from app.services.ai.native_tools import NATIVE_TOOLS, is_native_tool

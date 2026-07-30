@@ -1,0 +1,158 @@
+"""
+Tests de la política de investigación.
+
+El system prompt PIDE investigar; estas reglas COMPRUEBAN que lo hizo. Todo son
+funciones puras: sin red, sin API key, sin reloj real.
+"""
+
+import pytest
+
+from app.services.ai.chat_modes import CHAT_MODES, get_mode
+from app.services.ai.research_policy import (
+    budget_exhausted,
+    executed_tool_names,
+    research_gap,
+    tool_cache_key,
+)
+
+
+def _assistant_call(name: str, arguments: str = "{}") -> dict:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": name, "arguments": arguments}}
+        ],
+    }
+
+
+class TestExecutedToolNames:
+    def test_extrae_los_nombres_en_orden(self):
+        messages = [
+            {"role": "system", "content": "…"},
+            {"role": "user", "content": "hola"},
+            _assistant_call("buscar_en_biblioteca"),
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+            _assistant_call("abrir_documento"),
+        ]
+
+        assert executed_tool_names(messages) == [
+            "buscar_en_biblioteca",
+            "abrir_documento",
+        ]
+
+    def test_una_conversacion_sin_herramientas_devuelve_lista_vacia(self):
+        assert executed_tool_names([{"role": "user", "content": "hola"}]) == []
+        assert executed_tool_names([]) == []
+
+    def test_tolera_formas_malformadas(self):
+        messages = [
+            "no soy un dict",
+            {"role": "assistant", "tool_calls": ["tampoco"]},
+            {"role": "assistant", "tool_calls": [{"function": {}}]},
+        ]
+
+        assert executed_tool_names(messages) == []
+
+
+class TestResearchGap:
+    def test_sin_ninguna_herramienta_siempre_hay_brecha(self):
+        for mode_id in CHAT_MODES:
+            gap = research_gap([], get_mode(mode_id))
+
+            assert gap is not None
+            assert "No has consultado ninguna fuente" in gap
+
+    def test_buscar_sin_abrir_es_brecha(self):
+        gap = research_gap(["buscar_en_biblioteca"], get_mode("analisis"))
+
+        assert gap is not None
+        assert "abre el más relevante con abrir_documento" in gap
+
+    def test_buscar_y_abrir_basta_para_analisis(self):
+        assert (
+            research_gap(
+                ["buscar_en_biblioteca", "abrir_documento"], get_mode("analisis")
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("mode_id", ["comentario", "ilustracion", "discurso"])
+    def test_las_piezas_de_pulpito_exigen_el_texto_biblico(self, mode_id):
+        gap = research_gap(
+            ["buscar_en_biblioteca", "abrir_documento"], get_mode(mode_id)
+        )
+
+        assert gap is not None
+        assert "texto bíblico literal" in gap
+
+    @pytest.mark.parametrize("mode_id", ["comentario", "ilustracion", "discurso"])
+    def test_con_el_pasaje_leido_ya_no_hay_brecha(self, mode_id):
+        assert (
+            research_gap(
+                ["buscar_en_biblioteca", "abrir_documento", "leer_pasaje_biblico"],
+                get_mode(mode_id),
+            )
+            is None
+        )
+
+    def test_el_equivalente_del_mcp_tambien_cuenta_como_pasaje(self):
+        assert (
+            research_gap(
+                ["buscar_en_biblioteca", "abrir_documento", "get_verse_with_study"],
+                get_mode("comentario"),
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("mode_id", ["analisis", "presentacion"])
+    def test_los_modos_que_no_son_de_pulpito_no_exigen_pasaje(self, mode_id):
+        assert (
+            research_gap(
+                ["buscar_en_biblioteca", "abrir_documento"], get_mode(mode_id)
+            )
+            is None
+        )
+
+    def test_leer_solo_el_pasaje_basta_si_no_hubo_busqueda(self):
+        # No buscó nada, así que no hay "buscó pero no abrió". Leyó el texto.
+        assert research_gap(["leer_pasaje_biblico"], get_mode("comentario")) is None
+
+
+class TestBudgetExhausted:
+    def test_dentro_del_presupuesto(self):
+        assert budget_exhausted(started_at=100.0, budget_s=75.0, now=140.0) is False
+
+    def test_justo_en_el_limite_esta_agotado(self):
+        assert budget_exhausted(started_at=100.0, budget_s=75.0, now=175.0) is True
+
+    def test_pasado_el_limite(self):
+        assert budget_exhausted(started_at=100.0, budget_s=75.0, now=200.0) is True
+
+    def test_un_presupuesto_de_cero_significa_sin_limite(self):
+        assert budget_exhausted(started_at=0.0, budget_s=0.0, now=99999.0) is False
+
+
+class TestToolCacheKey:
+    def test_los_mismos_argumentos_dan_la_misma_clave(self):
+        a = tool_cache_key("abrir_documento", {"doc_id": 42})
+        b = tool_cache_key("abrir_documento", {"doc_id": 42})
+
+        assert a == b
+
+    def test_el_orden_de_las_claves_no_importa(self):
+        a = tool_cache_key("leer_pasaje_biblico", {"libro": "Juan", "capitulo": 3})
+        b = tool_cache_key("leer_pasaje_biblico", {"capitulo": 3, "libro": "Juan"})
+
+        assert a == b
+
+    def test_argumentos_distintos_dan_claves_distintas(self):
+        assert tool_cache_key("abrir_documento", {"doc_id": 1}) != tool_cache_key(
+            "abrir_documento", {"doc_id": 2}
+        )
+
+    def test_herramientas_distintas_no_colisionan(self):
+        assert tool_cache_key("a", {}) != tool_cache_key("b", {})
+
+    def test_tolera_argumentos_que_no_son_dict(self):
+        assert tool_cache_key("abrir_documento", None) == "abrir_documento:{}"

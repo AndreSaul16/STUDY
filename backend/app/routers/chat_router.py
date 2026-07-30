@@ -4,6 +4,7 @@ Chat Router — endpoints para el chat IA con OpenAI + MCP.
 POST /api/chat/stream   — chat con streaming SSE
 GET  /api/chat/health   — health check del chat service
 GET  /api/chat/tools    — lista de herramientas MCP disponibles
+GET  /api/chat/modes    — catálogo de modos de redacción
 """
 import logging
 
@@ -13,7 +14,9 @@ from fastapi.responses import StreamingResponse
 from ..schemas.chat_schemas import (
     ChatRequest,
     ChatHealthResponse,
+    ChatModesResponse,
 )
+from ..services.ai.chat_modes import DEFAULT_MODE, list_modes
 from ..services.ai.chat_service import get_chat_service, OPENAI_MODEL
 
 logger = logging.getLogger(__name__)
@@ -28,9 +31,12 @@ async def chat_stream(chat_request: ChatRequest, request: Request):
     Endpoint de chat con streaming SSE.
 
     Recibe una lista de mensajes y devuelve un stream de eventos SSE:
-      - event: metadata    → información inicial (model, tool_calls count)
-      - event: tool_call   → el LLM llamó una herramienta MCP
+      - event: tool_call   → el LLM llamó una herramienta
+      - event: tool_result → resumen de lo que devolvió esa herramienta
+      - event: sources     → fuentes consultadas, con doc_id/identifier/url
+      - event: metadata    → model, tool_calls count, modo aplicado
       - event: token       → token de texto de la respuesta
+      - event: suggestions → 3 preguntas de continuación
       - event: done        → fin del stream con stats
       - event: error       → error durante el proceso
     """
@@ -43,7 +49,7 @@ async def chat_stream(chat_request: ChatRequest, request: Request):
 
     async def event_generator():
         try:
-            async for event in service.chat_stream(messages):
+            async for event in service.chat_stream(messages, mode=chat_request.mode):
                 if await request.is_disconnected():
                     return
                 yield event
@@ -91,6 +97,18 @@ async def chat_health():
             mcp_tools_count=0,
             error=str(e),
         )
+
+
+@router.get("/modes", response_model=ChatModesResponse)
+async def chat_modes():
+    """
+    Catálogo de modos de redacción.
+
+    NO llama a get_chat_service() a propósito: el selector de modos de la
+    interfaz tiene que poder pintarse aunque falte OPENAI_API_KEY o el
+    proveedor esté caído. Es un catálogo estático, no depende del proveedor.
+    """
+    return ChatModesResponse(modes=list_modes(), default=DEFAULT_MODE)
 
 
 @router.get("/tools")
