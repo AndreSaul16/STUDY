@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/utils/cn";
-import { useIsMobile } from "@/hooks/useMediaQuery";
+import { useIsMobile, usePrefersReducedMotion } from "@/hooks/useMediaQuery";
 import { fetchChatModes } from "@/services/chatClient";
 import { FALLBACK_CHAT_MODES, type ChatMode } from "@/types/chat";
 import { IconChevronDown, IconClose } from "@/components/atoms/Icons";
@@ -56,6 +56,7 @@ interface ModePickerProps {
 export function ModePicker({ value, onChange, className }: ModePickerProps) {
   const modes = useChatModes();
   const isMobile = useIsMobile();
+  const reducedMotion = usePrefersReducedMotion();
   const [open, setOpen] = useState(false);
 
   const current = modes.find((m) => m.id === value) ?? modes[0];
@@ -125,8 +126,9 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
             className={cn(
               "relative max-h-[80dvh] overflow-y-auto rounded-t-2xl",
               "bg-paper-50 pb-[max(1rem,env(safe-area-inset-bottom))] dark:bg-ink-100",
-              // El bloque global de prefers-reduced-motion ya la neutraliza.
-              "animate-sheet-up",
+              // Mismo criterio que BottomSheet: quien pide menos movimiento no
+              // recibe el deslizamiento, aparece y ya.
+              !reducedMotion && "animate-sheet-up",
             )}
           >
             <div className="sticky top-0 flex items-center justify-between bg-paper-50 px-4 py-3 dark:bg-ink-100">

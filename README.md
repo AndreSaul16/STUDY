@@ -30,6 +30,11 @@ STUDY/
 │       ├── services/
 │       │   ├── mcp_content_service.py  # Conexión MCP (advenimus-jw-mcp)
 │       │   ├── ai/
+│       │   │   ├── chat_service.py     # Chat: bucle de tools + SSE
+│       │   │   ├── style_guide.py      # Bloques del system prompt (VOICE_GUIDE)
+│       │   │   ├── chat_modes.py       # 5 modos de redacción
+│       │   │   ├── source_tracker.py   # Fuentes consultadas → chips de la UI
+│       │   │   ├── research_policy.py  # Huecos de investigación + presupuesto
 │       │   │   ├── ai_service.py       # Orquestador IA
 │       │   │   ├── prompt_orchestrator.py  # 7 skills + system prompts
 │       │   │   ├── context_optimizer.py    # Ventana de contexto + token budget
@@ -43,14 +48,16 @@ STUDY/
 │       │       └── schema_mapper.py     # Mapeo modelo local → userData.db
 │       └── routers/
 │           ├── ai_router.py          # POST /api/ai/analyze (SSE)
+│           ├── chat_router.py        # POST /api/chat/stream, GET /api/chat/modes
 │           └── interop_router.py     # POST /api/interop/import|export
 │
 └── frontend/                        # React 19 + Vite + Tailwind 4
     └── src/
         ├── App.tsx                  # Root (init DB + theme + atajos)
         ├── types/
-        │   ├── domain.ts            # Article, Annotation, CrossReference
+        │   ├── domain.ts            # Article, Annotation, APP_VIEWS, RESEARCH_TABS
         │   ├── reference.ts         # Reference, ReferenceType, parsers/resolvers
+        │   ├── chat.ts              # ChatSource, ChatUiMessage, ChatMode
         │   └── ai.ts                # AISkill, SSE events, SKILLS_METADATA
         ├── engine/                  # ReferenceEngine (detección + caché LRU)
         │   ├── ReferenceEngine.ts   # detect() + resolveReference() cache-first
@@ -61,9 +68,11 @@ STUDY/
         ├── db/                      # Persistencia SQLite WASM
         │   ├── schema.ts            # Esquema SQL local + FTS5
         │   ├── database.ts          # sql.js init + IndexedDB persistence
-        │   └── repositories/        # DAOs: notes, marks, tags, history, search, favorites
+        │   └── repositories/        # DAOs: notes, marks, tags, history, search,
+        │                            #       favorites, conversations
         ├── store/                   # Zustand stores
-        │   ├── uiStore.ts           # Theme, tabs, sheet, search
+        │   ├── uiStore.ts           # Theme, view, tabs, sheet, search
+        │   ├── chatStore.ts         # Conversación activa + historial (sin persist)
         │   ├── readerStore.ts       # Artículo + anotaciones
         │   ├── referenceStore.ts    # Referencia activa + historial
         │   └── aiStore.ts           # Stream state + results por skill
@@ -72,19 +81,106 @@ STUDY/
         │   ├── useReferenceEngine.ts # Puente engine ↔ UI
         │   ├── useAIStream.ts       # fetch + ReadableStream SSE parser
         │   ├── useChapterSearch.ts  # Ctrl+F interno
+        │   ├── useChat.ts           # Stream SSE del chat → chatStore
+        │   ├── useStickToBottom.ts  # Auto-scroll que no secuestra al usuario
+        │   ├── useVisualViewport.ts # --kb-inset: teclado móvil
+        │   ├── useCopyToClipboard.ts # Copiar con fallback a execCommand
         │   ├── useMediaQuery.ts     # Responsive
         │   ├── useDatabase.ts       # Init SQLite WASM
         │   └── useVirtualList.ts    # Virtualización sin deps
         ├── services/
+        │   ├── chatClient.ts        # Modos + recorte del historial al contrato
         │   └── jwlibraryClient.ts   # Cliente HTTP interop
         ├── data/                    # Mock data
         ├── components/
-        │   ├── atoms/               # Button, Icons, Skeleton, Badge, Divider, Tooltip
-        │   ├── molecules/           # ContextMenu, SearchBar, NoteEditor, ReferenceCard, TabBar
-        │   ├── organisms/           # ReaderPanel, ResearchPanel, AIPanel, NotesPanel, InteropPanel
-        │   └── templates/           # SplitLayout (60/40 responsive)
-        └── utils/cn.ts              # clsx + tailwind-merge
+        │   ├── atoms/               # Button, Icons, CopyButton, Markdown(WithRefs)…
+        │   ├── molecules/           # ChatComposer, ChatMessage, ModePicker, SourceChips,
+        │   │                        # FollowUpChips, BottomNav, ContextMenu, TabBar…
+        │   ├── organisms/           # ChatScreen, ConversationsDrawer, MoreScreen,
+        │   │                        # ReaderPanel, ResearchPanel, AIPanel…
+        │   └── templates/           # AppShell (raíz) + SplitLayout (vista de lectura)
+        └── utils/                   # cn, chatSegments, plainText, linkifyReferences
 ```
+
+## Navegación: el chat es el producto
+
+`AppShell` es la raíz. La app arranca en el **chat**, no en el lector: el chat
+estaba antes en la pestaña novena de diez, dentro de un bottom sheet, dentro
+del lector — tres niveles de profundidad para lo que más se usa.
+
+| Vista (`APP_VIEWS`) | Móvil (<768px) | Escritorio |
+|---|---|---|
+| `chat` (por defecto) | `ChatScreen` a pantalla completa | `ChatScreen` 55 % \| `ResearchPanel` 45 % |
+| `bible` | `BiblePanel` a pantalla completa | (cae a la vista de lectura) |
+| `read` | `ReaderPanel` + bottom sheet | `SplitLayout` (60/40 o 65/35), reutilizado tal cual |
+| `more` | `MoreScreen` (Notas, Anotaciones, Favoritos, Biblioteca, Análisis, Sync, Ajustes) | (cae a la vista de lectura) |
+
+En móvil solo se monta la vista activa: en el chat no se paga el render del
+lector ni su `useTextSelection`. La vista se persiste junto al tema, así que la
+app reabre donde estaba.
+
+`RESEARCH_TABS` no cambia: el panel de investigación sigue sabiendo renderizar
+sus diez pestañas. Lo que cambia es que la `TabBar` lista cinco por defecto y
+al resto se llega desde "Más".
+
+## El chat
+
+### Modos de redacción
+
+`GET /api/chat/modes` devuelve el catálogo (sin los prompts, que son internos).
+El endpoint **no** depende del proveedor de IA: responde 200 aunque falte
+`OPENAI_API_KEY`, para que el selector se pueda pintar siempre.
+
+| id | Para qué | Longitud objetivo |
+|---|---|---|
+| `analisis` (default) | Respuesta de estudio con su fuente en cada afirmación | — |
+| `comentario` | Comentario de reunión listo para leer en voz alta | 60-80 palabras |
+| `ilustracion` | Ilustración moderna atada a un pasaje | 120-200 palabras |
+| `discurso` | Guion con introducción, pasos y conclusión | 400-700 palabras |
+| `presentacion` | Programa de acto y oración | — |
+
+El system prompt se compone por bloques (`style_guide.py`): identidad,
+política de investigación, idioma, **voz del usuario**, plantilla del modo,
+contrato de citas y catálogo de herramientas. `VOICE_GUIDE` se inyecta en
+todos los modos: la IA de esta app no es un asistente genérico, escribe como
+escribe el usuario.
+
+### Calidad de la investigación
+
+Un prompt es una petición, no una garantía. Después de las rondas de
+herramientas, `research_policy.py` comprueba huecos concretos y fuerza **una**
+ronda de cierre si los encuentra:
+
+- no se consultó ninguna fuente;
+- se buscó pero no se abrió ningún artículo (un fragmento de búsqueda no basta);
+- el modo es de púlpito (`comentario`, `ilustracion`, `discurso`) y no se leyó
+  el texto bíblico literal, sin el cual no se puede entrecomillar la expresión
+  clave.
+
+Además hay caché de herramientas por petición (el modelo reabre el mismo
+`doc_id` en rondas distintas y cada scrape cuesta ~20 s) y un presupuesto de
+tiempo, porque los proxies cortan un SSE que pasa mucho rato sin emitir bytes.
+
+### Eventos SSE de `POST /api/chat/stream`
+
+```
+event: tool_call     {"name":"buscar_en_biblioteca","arguments":{…}}
+event: tool_result   {"name":"buscar_en_biblioteca","summary":"6 resultados"}
+event: sources       {"items":[{"kind":"article","label":"…","citation":"…","doc_id":123}]}
+event: metadata      {"tool_calls":4,"model":"…","mode":"comentario"}
+event: token         {"text":"…"}
+event: suggestions   {"items":["…","…","…"]}
+event: done          {"total_tokens":8123,"elapsed_ms":41210}
+event: error         {"message":"…"}
+: ping                                            (keepalive, se ignora)
+```
+
+`mode` y `conversation_id` del request son **opcionales**, y los eventos nuevos
+son aditivos: un cliente antiguo los ignora y sigue funcionando. Por eso el
+backend se puede desplegar sin reconstruir el `frontend/dist`.
+
+`mode` no se valida con un patrón estricto a propósito: un id desconocido
+degrada al modo por defecto en vez de devolver 422.
 
 ## Entorno de Desarrollo
 
@@ -210,8 +306,19 @@ El frontend usa SQLite WASM (sql.js) con persistencia en IndexedDB.
 | `note_tags` | Relación N:M notas ↔ tags |
 | `favorites` | Referencias marcadas como favoritas |
 | `history` | Historial de navegación persistente |
+| `conversations` | Conversaciones del chat (título, modo, fijada) |
+| `chat_messages` | Mensajes con sus fuentes, herramientas y sugerencias (JSON) |
 | `notes_fts` | Tabla virtual FTS5 para búsqueda semántica |
-| `schema_version` | Versionado para migraciones |
+| `schema_version` | Versionado para migraciones (v3) |
+
+**El historial del chat vive en el cliente**, no en el backend. La app no tiene
+autenticación (un historial en Railway sería compartido por quien abriera la
+URL) y el contenedor tiene filesystem efímero (se borraría en cada deploy).
+
+`migrateChatTables` es aditiva e idempotente: solo crea tablas e índices, sin
+`DROP` ni `ALTER` destructivos, y se aplica igual sobre una base v2 existente.
+Las tablas del chat **no usan FTS5** (sql.js estándar no lo trae): la búsqueda
+de conversaciones va con `LIKE`, el mismo fallback que ya usa `searchRepository`.
 
 ### Búsqueda Semántica (FTS5)
 
@@ -293,12 +400,24 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 | `OPENAI_MODEL` | `gpt-4o-mini` | Modelo a usar |
 | `OPENAI_MAX_TOKENS` | `2000` | Tope de tokens de respuesta |
 | `OPENAI_REASONING_EFFORT` | `none` | `none\|low\|medium\|high\|xhigh`. Vacío en modelos clásicos |
+| `CHAT_MAX_TOOL_ROUNDS` | `5` | Rondas máximas de tool-calling (1-10). Más rondas = mejor documentado pero más lento y más caro |
+| `CHAT_RESEARCH_BUDGET_SECONDS` | `75` | Segundos de investigación antes de cortar y redactar (10-600). Existe porque los proxies cortan un SSE inactivo |
+| `CHAT_FOLLOWUPS` | `1` | Generar las 3 sugerencias con una llamada corta extra (~200 tokens). Con `0` se usan las estáticas de cada modo |
 | `JW_MCP_PATH` | `jw-mcp` | Ejecutable del MCP. Si la ruta absoluta no existe, cae al binario del `PATH` |
 | `VITE_AI_API_BASE` | origen de la página | URL del backend (en producción se sirve co-locado) |
+
+Las tres `CHAT_*` degradan a su default si traen basura o quedan fuera de
+rango: una variable mal escrita en el panel de Railway no puede dejar el chat
+sin servicio.
 
 En producción, el `Dockerfile` instala Node + `jw-mcp` y fija
 `JW_MCP_PATH=jw-mcp`. Ojo: una variable definida en el servicio (Railway,
 etc.) **gana** sobre el `ENV` del Dockerfile.
+
+**`frontend/dist` está commiteado y es lo que sirve el backend.** Los cambios
+de frontend no llegan a producción hasta que se reconstruya (`pnpm build`) y se
+commitee `dist/`. Es un paso deliberado: los cambios de backend son
+retrocompatibles con el `dist` anterior.
 
 ## Responsive
 
@@ -306,14 +425,26 @@ Tres modos, no dos:
 
 | Ancho | Layout | Navegación |
 |-------|--------|------------|
-| `<768px` | Lector a pantalla completa | Barra inferior de 5 destinos + bottom sheet arrastrable |
-| `768–1149px` | Split 65/35 | Pestañas con scroll horizontal |
-| `≥1150px` | Split 60/40 | Pestañas con scroll horizontal |
+| `<768px` | Una vista a la vez (`AppShell`) | `BottomNav` de 4 destinos + bottom sheet arrastrable en la lectura |
+| `768–1149px` | Chat 55/45 · lectura 65/35 | Pestañas (5 primarias) |
+| `≥1150px` | Chat 55/45 · lectura 60/40 | Pestañas (5 primarias) |
 
 Detalles que importan: `viewport-fit=cover` + `env(safe-area-inset-*)` para el
 notch y la barra gestual, objetivos táctiles de 44px, tipografía fluida con
 `clamp()` (nunca por debajo de 16px en campos, para que iOS no haga zoom), y
 `prefers-reduced-motion` anulando **duración y retardo** de las animaciones.
+
+Dos detalles del chat en móvil que no son cosméticos:
+
+- **El teclado.** `100dvh` no se entera de que el teclado tapa medio viewport.
+  `useVisualViewport` publica `--kb-inset` y el composer se sube con él; la
+  `BottomNav` se esconde para no robar 56 px mientras se escribe.
+- **El auto-scroll.** Antes se hacía `scrollTop = scrollHeight` en cada token:
+  era imposible releer hacia arriba durante los 30-60 s que tarda la respuesta.
+  Ahora solo se pega al fondo si el usuario ya estaba abajo, y si no aparece un
+  botón "Ir al final".
+- **El composer no se deshabilita** mientras la IA responde: deshabilitarlo
+  cierra el teclado en iOS y hace perder el foco.
 
 ## Atajos de Teclado
 

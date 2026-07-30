@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/utils/cn";
+import { usePrefersReducedMotion } from "@/hooks/useMediaQuery";
 import { useChatStore } from "@/store/chatStore";
 import { useChatModes } from "@/components/molecules/ModePicker";
 import { chatModeLabel } from "@/types/chat";
@@ -31,6 +32,7 @@ export function ConversationsDrawer() {
   const conversations = useChatStore((s) => s.conversations);
   const conversationId = useChatStore((s) => s.conversationId);
   const modes = useChatModes();
+  const reducedMotion = usePrefersReducedMotion();
 
   const [query, setQuery] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -67,6 +69,7 @@ export function ConversationsDrawer() {
           "relative flex h-dvh w-[88%] max-w-[320px] flex-col",
           "border-r border-seam-light bg-paper-50 dark:border-seam-dark dark:bg-ink-100",
           "pt-[env(safe-area-inset-top)]",
+          !reducedMotion && "animate-drawer-in",
         )}
       >
         <header className="flex shrink-0 items-center justify-between px-3 py-3">

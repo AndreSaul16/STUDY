@@ -12,7 +12,7 @@ import {
 } from "@/components/atoms/Icons";
 
 /**
- * BottomNav — navegación inferior del móvil. Evoluciona a MobileNav.
+ * BottomNav — navegación inferior del móvil. Sustituye al antiguo MobileNav.
  *
  * Cuatro destinos y no cinco: en un iPhone de 390 px eso da ~98 px por botón
  * en vez de 78. Y el primero es el Chat, que es el núcleo de la app: antes

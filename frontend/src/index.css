@@ -172,6 +172,15 @@
     }
   }
 
+  @keyframes drawer-in {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+
   @keyframes scan-shimmer {
     from {
       background-position: -200% 0;
@@ -197,6 +206,9 @@
   }
   .animate-sheet-up {
     animation: sheet-up 0.32s var(--ease-out-expo) both;
+  }
+  .animate-drawer-in {
+    animation: drawer-in 0.28s var(--ease-out-expo) both;
   }
   .animate-fade-rise {
     animation: fade-rise 0.5s var(--ease-out-expo) both;

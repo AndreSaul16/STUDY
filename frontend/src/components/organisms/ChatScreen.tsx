@@ -159,7 +159,8 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
         ref={scrollRef}
         onScroll={onScroll}
         role="log"
-        aria-live="polite"
+        // Sin aria-live aquí: anunciaría la conversación entera cada vez que
+        // llega un token. Lo que se anuncia es solo la región de streaming.
         aria-label="Conversación"
         className={cn(
           "chat-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain",
@@ -188,18 +189,20 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
         {isStreaming && !streamingContent && <ToolActivityTrail activity={activity} />}
 
         {isStreaming && streamingContent && (
-          <ChatMessage
-            streaming
-            message={{
-              id: "streaming",
-              role: "assistant",
-              content: streamingContent,
-              sources: [],
-              tools: [],
-              suggestions: [],
-              createdAt: Date.now(),
-            }}
-          />
+          <div aria-live="polite" aria-atomic="false">
+            <ChatMessage
+              streaming
+              message={{
+                id: "streaming",
+                role: "assistant",
+                content: streamingContent,
+                sources: [],
+                tools: [],
+                suggestions: [],
+                createdAt: Date.now(),
+              }}
+            />
+          </div>
         )}
 
         {error && (
