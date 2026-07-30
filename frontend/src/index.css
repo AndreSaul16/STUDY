@@ -264,4 +264,15 @@
     text-indent: 1.5em;
     margin-top: -0.5em;
   }
+
+  /* ─── Lista de mensajes del chat ─── */
+  .chat-scroll {
+    /* El navegador ancla el scroll al contenido que crece y compite con
+       useStickToBottom: el resultado son saltos mientras la IA escribe. Aquí
+       el anclaje lo decidimos nosotros. */
+    overflow-anchor: none;
+    /* El teclado móvil no encoge el viewport; el composer ya se sube con
+       --kb-inset y la lista reserva el mismo hueco para no quedar tapada. */
+    scroll-padding-bottom: var(--kb-inset, 0px);
+  }
 }
