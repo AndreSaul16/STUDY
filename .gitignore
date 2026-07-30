@@ -27,3 +27,8 @@ Thumbs.db
 
 # Caché de contenido de WOL (regenerable)
 backend/.cache/
+
+# Playwright (artefactos de las pruebas E2E)
+frontend/playwright-report/
+frontend/test-results/
+frontend/.playwright/

@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:movil": "playwright test --project=movil",
+    "test:e2e:report": "playwright show-report"
   },
   "dependencies": {
     "@types/sql.js": "^1.4.11",
@@ -21,6 +25,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@tailwindcss/vite": "^4.0.0",
     "@types/node": "^26.1.1",
     "@types/react": "^19.0.1",
