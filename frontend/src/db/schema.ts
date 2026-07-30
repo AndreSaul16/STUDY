@@ -101,6 +101,33 @@ CREATE TABLE IF NOT EXISTS history (
     visited_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
+-- ─── Conversaciones con la IA ────────────────────────────────────
+-- El historial del chat vive AQUÍ, en el navegador, y no en el backend:
+-- la app no tiene autenticación (un historial en Railway sería compartido
+-- por quien abriera la URL) y el contenedor tiene filesystem efímero.
+CREATE TABLE IF NOT EXISTS conversations (
+    conversation_id TEXT PRIMARY KEY,
+    title           TEXT NOT NULL DEFAULT 'Conversación nueva',
+    mode            TEXT NOT NULL DEFAULT 'analisis',
+    pinned          INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id       TEXT PRIMARY KEY,
+    conversation_id  TEXT NOT NULL,
+    seq              INTEGER NOT NULL,
+    role             TEXT NOT NULL,             -- 'user' | 'assistant'
+    content          TEXT NOT NULL,
+    mode             TEXT,
+    sources_json     TEXT NOT NULL DEFAULT '[]',
+    tools_json       TEXT NOT NULL DEFAULT '[]',
+    suggestions_json TEXT NOT NULL DEFAULT '[]',
+    created_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+);
+
 -- ─── Índices para rendimiento ───────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_marks_document ON user_marks(document_id);
 CREATE INDEX IF NOT EXISTS idx_marks_publication_document ON user_marks(publication_key, document_id);
@@ -112,6 +139,8 @@ CREATE INDEX IF NOT EXISTS idx_note_tags_note ON note_tags(note_id);
 CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_history_document ON history(document_id);
 CREATE INDEX IF NOT EXISTS idx_history_visited ON history(visited_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages(conversation_id, seq);
+CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
 
 -- ─── Versión del esquema (para migraciones) ─────────────────────
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -120,6 +149,46 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 INSERT OR IGNORE INTO schema_version (version) VALUES (2);
+INSERT OR IGNORE INTO schema_version (version) VALUES (3);
+`;
+
+/**
+ * Migración a la v3 — tablas del chat.
+ *
+ * Solo AÑADE tablas e índices: ningún DROP, ningún ALTER destructivo. Se
+ * aplica también sobre bases v2 ya existentes en el dispositivo del usuario.
+ *
+ * Deliberadamente sin FTS5: sql.js estándar no lo trae y la búsqueda de
+ * conversaciones se resuelve con LIKE (mismo fallback que searchRepository).
+ */
+export const LOCAL_DB_SCHEMA_CHAT = `
+CREATE TABLE IF NOT EXISTS conversations (
+    conversation_id TEXT PRIMARY KEY,
+    title           TEXT NOT NULL DEFAULT 'Conversación nueva',
+    mode            TEXT NOT NULL DEFAULT 'analisis',
+    pinned          INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id       TEXT PRIMARY KEY,
+    conversation_id  TEXT NOT NULL,
+    seq              INTEGER NOT NULL,
+    role             TEXT NOT NULL,
+    content          TEXT NOT NULL,
+    mode             TEXT,
+    sources_json     TEXT NOT NULL DEFAULT '[]',
+    tools_json       TEXT NOT NULL DEFAULT '[]',
+    suggestions_json TEXT NOT NULL DEFAULT '[]',
+    created_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages(conversation_id, seq);
+CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
+
+INSERT OR IGNORE INTO schema_version (version) VALUES (3);
 `;
 
 /**

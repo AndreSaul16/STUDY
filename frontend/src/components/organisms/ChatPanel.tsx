@@ -28,7 +28,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
     error,
     send,
     cancel,
-    clear,
+    newConversation,
   } = useChat();
 
   const [input, setInput] = useState("");
@@ -81,10 +81,10 @@ export function ChatPanel({ className }: ChatPanelProps) {
           </div>
           {messages.length > 0 && (
             <button
-              onClick={clear}
+              onClick={newConversation}
               className="rounded-md px-2 py-1 font-ui text-[10px] text-muted-light hover:bg-paper-200 hover:text-reading-light dark:text-muted-dark dark:hover:bg-ink-50 dark:hover:text-reading-dark"
             >
-              Limpiar
+              Nueva
             </button>
           )}
         </div>

@@ -14,7 +14,11 @@
  */
 
 import initSqlJs, { type Database, type SqlJsStatic, type SqlValue } from "sql.js";
-import { LOCAL_DB_SCHEMA_BASE, LOCAL_DB_SCHEMA_FTS5 } from "@/db/schema";
+import {
+  LOCAL_DB_SCHEMA_BASE,
+  LOCAL_DB_SCHEMA_CHAT,
+  LOCAL_DB_SCHEMA_FTS5,
+} from "@/db/schema";
 
 const INDEXED_DB_NAME = "study-workspace";
 const INDEXED_DB_STORE = "sqlite";
@@ -52,6 +56,7 @@ function applySchema(database: Database): void {
   // 1. Schema base — siempre aplicable
   database.exec(LOCAL_DB_SCHEMA_BASE);
   migratePublicationScopes(database);
+  migrateChatTables(database);
 
   // 2. Detectar FTS5 y aplicar schema FTS solo si está soportado
   fts5Available = detectFTS5(database);
@@ -85,6 +90,16 @@ function migratePublicationScopes(database: Database): void {
   database.exec("CREATE INDEX IF NOT EXISTS idx_marks_publication_document ON user_marks(publication_key, document_id)");
   database.exec("CREATE INDEX IF NOT EXISTS idx_notes_publication_document ON notes(publication_key, document_id)");
   database.exec("INSERT OR IGNORE INTO schema_version (version) VALUES (2)");
+}
+
+/**
+ * Migra a la v3 — tablas del chat sobre bases v2 ya existentes.
+ *
+ * Idempotente (todo con IF NOT EXISTS) y aditiva: no toca ni una tabla
+ * anterior, así que no puede perder anotaciones ni notas.
+ */
+function migrateChatTables(database: Database): void {
+  database.exec(LOCAL_DB_SCHEMA_CHAT);
 }
 
 // ─── IndexedDB helpers ───────────────────────────────────────────
@@ -182,6 +197,7 @@ function ensureSchema(database: Database): void {
     applySchema(database);
   } else {
     migratePublicationScopes(database);
+    migrateChatTables(database);
     // Schema base ya aplicado — pero re-detectar FTS5 por si la DB
     // fue creada con un motor distinto al actual
     fts5Available = detectFTS5(database);

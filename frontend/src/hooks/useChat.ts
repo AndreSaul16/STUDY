@@ -1,22 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { parseSSEEvent, splitSSEEvents } from "@/utils/sse";
 
-import { API_BASE } from "@/services/apiBase";
-const CHAT_ENDPOINT = `${API_BASE}/api/chat/stream`;
+import {
+  buildRequestMessages,
+  CHAT_STREAM_ENDPOINT,
+} from "@/services/chatClient";
+import { useChatStore } from "@/store/chatStore";
+import type { ChatSource, ChatUiMessage, ToolActivity } from "@/types/chat";
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
-/** Una consulta a fuentes en curso, para poder enseñarla mientras pasa. */
-export interface ToolActivity {
-  name: string;
-  detail: string;
-}
+export type { ToolActivity } from "@/types/chat";
 
 interface UseChatReturn {
-  messages: ChatMessage[];
+  messages: ChatUiMessage[];
   isStreaming: boolean;
   streamingContent: string;
   /** Herramientas consultadas en el turno actual, en orden. */
@@ -24,7 +19,9 @@ interface UseChatReturn {
   error: string | null;
   send: (content: string) => void;
   cancel: () => void;
-  clear: () => void;
+  /** Empieza una conversación nueva. Sustituye al antiguo "Limpiar". */
+  newConversation: () => void;
+  retryLast: () => void;
 }
 
 /**
@@ -65,18 +62,36 @@ function describeArgs(args: unknown): string {
   return "";
 }
 
+/** Valida las fuentes que llegan por SSE antes de meterlas en el store. */
+function parseSources(raw: unknown): ChatSource[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const s = item as Record<string, unknown>;
+    if (typeof s.kind !== "string" || typeof s.label !== "string") return [];
+    return [s as unknown as ChatSource];
+  });
+}
+
+function parseStringList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((x): x is string => typeof x === "string" && x.trim() !== "");
+}
+
 /**
  * useChat — hook para el chat IA con OpenAI + MCP.
  *
- * Usa fetch + ReadableStream para consumir SSE del backend.
- * Mantiene historial de mensajes y estado de streaming.
+ * Usa fetch + ReadableStream para consumir SSE del backend. El estado vive en
+ * `chatStore` y el historial se persiste en SQLite: antes estaba en un
+ * `useState` local y se perdía al recargar o al desmontar la pestaña.
  */
 export function useChat(): UseChatReturn {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [streamingContent, setStreamingContent] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [activity, setActivity] = useState<ToolActivity[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const messages = useChatStore((s) => s.messages);
+  const isStreaming = useChatStore((s) => s.isStreaming);
+  const streamingContent = useChatStore((s) => s.streamingContent);
+  const activity = useChatStore((s) => s.activity);
+  const error = useChatStore((s) => s.error);
+
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
 
@@ -89,141 +104,166 @@ export function useChat(): UseChatReturn {
     };
   }, []);
 
-  const send = useCallback(
-    async (content: string) => {
-      if (!content.trim() || isStreaming) return;
+  /**
+   * Abre el stream con el historial que ya hay en el store.
+   *
+   * Está separado de `send` para que reintentar tras un fallo de red no vuelva
+   * a insertar el mensaje del usuario (ya está guardado en SQLite).
+   */
+  const runTurn = useCallback(async (conversationId: string) => {
+    const requestMessages = buildRequestMessages(useChatStore.getState().messages);
+    const mode = useChatStore.getState().mode;
 
-      setError(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-      // Añadir mensaje del usuario
-      const userMsg: ChatMessage = { role: "user", content };
-      const newMessages = [...messages, userMsg];
-      setMessages(newMessages);
+    let fullContent = "";
+    let suggestions: string[] = [];
 
-      // Preparar stream
-      setIsStreaming(true);
-      setStreamingContent("");
-      setActivity([]);
+    try {
+      const response = await fetch(CHAT_STREAM_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          messages: requestMessages,
+          mode,
+          conversation_id: conversationId,
+        }),
+        signal: controller.signal,
+      });
 
-      const controller = new AbortController();
-      abortRef.current = controller;
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
 
-      let fullContent = "";
+      if (!response.body) {
+        throw new Error("Response body is null");
+      }
 
-      try {
-        const response = await fetch(CHAT_ENDPOINT, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-          },
-          body: JSON.stringify({
-            messages: newMessages.map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-          }),
-          signal: controller.signal,
-        });
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-        if (!response.body) {
-          throw new Error("Response body is null");
-        }
+        buffer += decoder.decode(value, { stream: true });
+        const { events, rest } = splitSSEEvents(buffer);
+        buffer = rest;
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
+        for (const rawEvent of events) {
+          if (!rawEvent.trim()) continue;
+          const parsed = parseSSEEvent(rawEvent);
+          // Los comentarios de keepalive (": ping") no parsean: se ignoran.
+          if (!parsed) continue;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+          const chat = useChatStore.getState();
 
-          buffer += decoder.decode(value, { stream: true });
-          const { events, rest } = splitSSEEvents(buffer);
-          buffer = rest;
-
-          for (const rawEvent of events) {
-            if (!rawEvent.trim()) continue;
-            const parsed = parseSSEEvent(rawEvent);
-            if (!parsed) continue;
-
-            switch (parsed.event) {
-              case "tool_call": {
-                const name = String(parsed.data.name ?? "");
-                if (!mountedRef.current || !name) break;
-                setActivity((prev) => [
-                  ...prev,
-                  {
-                    name,
-                    detail: describeArgs(parsed.data.arguments),
-                  },
-                ]);
-                break;
-              }
-              case "token":
-                fullContent += String(parsed.data.text ?? "");
-                if (mountedRef.current) setStreamingContent(fullContent);
-                break;
-              case "error":
-                if (mountedRef.current) {
-                  setError(String(parsed.data.message ?? "Unknown error"));
-                }
-                break;
-              case "done":
-                // Stream completado
-                break;
+          switch (parsed.event) {
+            case "tool_call": {
+              const name = String(parsed.data.name ?? "");
+              if (!mountedRef.current || !name) break;
+              chat.pushActivity({
+                name,
+                detail: describeArgs(parsed.data.arguments),
+              });
+              break;
             }
+            case "tool_result": {
+              const name = String(parsed.data.name ?? "");
+              if (!mountedRef.current || !name) break;
+              chat.completeActivity(name, String(parsed.data.summary ?? ""));
+              break;
+            }
+            case "sources":
+              if (mountedRef.current) {
+                chat.setPendingSources(parseSources(parsed.data.items));
+              }
+              break;
+            case "suggestions":
+              suggestions = parseStringList(parsed.data.items);
+              break;
+            case "metadata":
+              // Reservado para telemetría (model, mode, tool_calls). No hay
+              // nada que pintar todavía; se ignora sin romper.
+              break;
+            case "token":
+              fullContent += String(parsed.data.text ?? "");
+              if (mountedRef.current) chat.appendToken(fullContent);
+              break;
+            case "error":
+              if (mountedRef.current) {
+                chat.setError(String(parsed.data.message ?? "Unknown error"));
+              }
+              break;
+            case "done":
+              // Stream completado
+              break;
+            default:
+              // Evento desconocido de un backend más nuevo: se ignora.
+              break;
           }
-        }
-
-        // Añadir respuesta del asistente al historial
-        if (fullContent && mountedRef.current) {
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", content: fullContent },
-          ]);
-        }
-      } catch (err) {
-        if (controller.signal.aborted) {
-          // Cancelado por el usuario — guardar contenido parcial (local, no del store)
-          if (fullContent && mountedRef.current) {
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", content: fullContent + " [cancelado]" },
-            ]);
-          }
-        } else if (mountedRef.current) {
-          const message = err instanceof Error ? err.message : "Unknown error";
-          setError(message);
-        }
-      } finally {
-        if (mountedRef.current) {
-          setIsStreaming(false);
-          setStreamingContent("");
-          setActivity([]);
-        }
-        if (abortRef.current === controller) {
-          abortRef.current = null;
         }
       }
+
+      if (mountedRef.current) {
+        useChatStore.getState().finishTurn(fullContent, suggestions);
+      }
+    } catch (err) {
+      if (controller.signal.aborted) {
+        // Cancelado por el usuario — el parcial se guarda igualmente.
+        if (mountedRef.current) {
+          useChatStore.getState().abortTurn(fullContent);
+        }
+      } else if (mountedRef.current) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        const chat = useChatStore.getState();
+        chat.setError(message);
+        chat.abortTurn(fullContent);
+      }
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
+    }
+  }, []);
+
+  const send = useCallback(
+    async (content: string) => {
+      const trimmed = content.trim();
+      const store = useChatStore.getState();
+      if (!trimmed || store.isStreaming) return;
+
+      // El turno del usuario se persiste ANTES de abrir el stream: si la red
+      // falla, la pregunta no se pierde y se puede reintentar.
+      const conversationId = store.startTurn(trimmed);
+      if (!conversationId) return;
+      await runTurn(conversationId);
     },
-    [messages, isStreaming],
+    [runTurn],
   );
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
   }, []);
 
-  const clear = useCallback(() => {
-    setMessages([]);
-    setStreamingContent("");
-    setActivity([]);
-    setError(null);
+  const newConversation = useCallback(() => {
+    useChatStore.getState().newConversation();
   }, []);
+
+  /** Reintenta el último turno tras un fallo de red, sin duplicar la pregunta. */
+  const retryLast = useCallback(() => {
+    const store = useChatStore.getState();
+    if (store.isStreaming || !store.conversationId) return;
+    if (store.messages[store.messages.length - 1]?.role !== "user") return;
+
+    store.resumeTurn();
+    void runTurn(store.conversationId);
+  }, [runTurn]);
 
   return {
     messages,
@@ -233,6 +273,7 @@ export function useChat(): UseChatReturn {
     error,
     send,
     cancel,
-    clear,
+    newConversation,
+    retryLast,
   };
 }

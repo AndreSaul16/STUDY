@@ -1,11 +1,18 @@
 import { useEffect } from "react";
 import { useUIStore } from "@/store/uiStore";
+import { useChatStore } from "@/store/chatStore";
 import { useDatabase } from "@/hooks/useDatabase";
 import { SplitLayout } from "@/components/templates/SplitLayout";
 
 export default function App() {
   const theme = useUIStore((s) => s.theme);
   const { ready, error } = useDatabase();
+
+  // El historial del chat vive en SQLite: hasta que la DB no está lista no se
+  // puede leer, así que la hidratación cuelga del mismo gate que el resto.
+  useEffect(() => {
+    if (ready) useChatStore.getState().hydrate();
+  }, [ready]);
 
   // Sincronizar clase .dark en <html> con el store
   useEffect(() => {
