@@ -32,11 +32,18 @@ import os
 import time
 from typing import AsyncGenerator, Dict, Any, List, Optional, Sequence
 
-from openai import AsyncOpenAI
-
 from .chat_modes import DEFAULT_MODE, CHAT_MODES, ModeSpec, get_mode, list_modes
+from .chat_providers import (
+    PROVIDERS,
+    ChatRuntime,
+    build_runtime,
+    effort_params,
+    server_runtime,
+    tool_choice_for,
+)
 from .mcp_bridge import get_mcp_bridge
 from .native_tools import NATIVE_TOOLS, call_native_tool, is_native_tool
+from .redaction import redact
 from .research_policy import (
     budget_exhausted,
     executed_tool_names,
@@ -90,11 +97,14 @@ if _raw_effort and _raw_effort not in _VALID_EFFORTS:
 
 OPENAI_REASONING_EFFORT = _raw_effort
 
-# Rondas con tools: forzado a 'none' (restricción 2).
-_TOOL_PARAMS: Dict[str, Any] = {"reasoning_effort": "none"} if OPENAI_REASONING_EFFORT else {}
-# Ronda final sin tools: se respeta el effort configurado.
-_ANSWER_PARAMS: Dict[str, Any] = (
-    {"reasoning_effort": OPENAI_REASONING_EFFORT} if OPENAI_REASONING_EFFORT else {}
+# Los params del MODO SERVIDOR, derivados ya de la capa de proveedor: las
+# rondas con tools van con lo que el proveedor imponga ('none' en OpenAI) y la
+# ronda final con el effort configurado. Se conservan a nivel de módulo porque
+# son la configuración por defecto del despliegue y hay tests que la blindan.
+_TOOL_PARAMS: Dict[str, Any]
+_ANSWER_PARAMS: Dict[str, Any]
+_TOOL_PARAMS, _ANSWER_PARAMS = effort_params(
+    PROVIDERS["openai"], OPENAI_REASONING_EFFORT
 )
 
 
@@ -209,15 +219,24 @@ def parse_followups(raw: str, fallback: Sequence[str]) -> List[str]:
     return items[:3]
 
 
+#: Mensaje del 503 cuando no hay ni key de cliente ni de servidor. Accionable:
+#: dice exactamente qué hacer, porque el usuario SÍ puede arreglarlo.
+NO_KEY_MESSAGE = (
+    "No hay ninguna API key configurada. Añade la tuya en Más → Ajustes de IA."
+)
+
+
 class ChatService:
-    """Servicio de chat IA con OpenAI + MCP tools."""
+    """
+    Servicio de chat IA con MCP tools.
+
+    El servicio ya NO tiene cliente propio: el proveedor, el modelo y la key
+    llegan por petición en un ``ChatRuntime`` (ver chat_providers). Lo único
+    que sobrevive entre peticiones es el catálogo de herramientas, que es caro
+    de cargar y no depende de quién pregunte.
+    """
 
     def __init__(self):
-        if not OPENAI_API_KEY or OPENAI_API_KEY == "sk-your-api-key-here":
-            raise ValueError(
-                "OPENAI_API_KEY no configurada. Añádela en backend/.env"
-            )
-        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
         # Sólo las del MCP (para diagnóstico en /api/chat/health).
         self.mcp_tools: list[Dict[str, Any]] = []
         # Las que realmente se le ofrecen al modelo: nativas + MCP.
@@ -273,12 +292,16 @@ class ChatService:
                 bridge = get_mcp_bridge()
                 result = await asyncio.to_thread(bridge.call_tool, name, args)
             return json.dumps(result, ensure_ascii=False)
-        except Exception:
-            logger.exception("Error ejecutando herramienta %s", name)
+        except Exception as exc:
+            logger.error("Error ejecutando herramienta %s: %s", name, redact(exc))
             return json.dumps({"error": "tool execution failed"})
 
     async def _generate_followups(
-        self, full_messages: list[Dict[str, Any]], answer: str, mode: ModeSpec
+        self,
+        runtime: ChatRuntime,
+        full_messages: list[Dict[str, Any]],
+        answer: str,
+        mode: ModeSpec,
     ) -> List[str]:
         """
         Sugerencias de continuación. Llamada corta, sin tools, sin streaming.
@@ -290,25 +313,28 @@ class ChatService:
             return list(mode.followups)[:3]
 
         try:
-            response = await self.client.chat.completions.create(
-                model=OPENAI_MODEL,
+            response = await runtime.client.chat.completions.create(
+                model=runtime.model,
                 messages=[
                     *full_messages,
                     {"role": "assistant", "content": answer},
                     {"role": "user", "content": _FOLLOWUPS_PROMPT},
                 ],
                 max_completion_tokens=200,
-                **({"reasoning_effort": "none"} if OPENAI_REASONING_EFFORT else {}),
+                **runtime.tool_params,
             )
-        except Exception:
-            logger.warning("No se pudieron generar sugerencias", exc_info=True)
+        except Exception as exc:
+            logger.warning("No se pudieron generar sugerencias: %s", redact(exc))
             return list(mode.followups)[:3]
 
         raw = response.choices[0].message.content or ""
         return parse_followups(raw, mode.followups)
 
     async def chat_stream(
-        self, messages: list[Dict[str, str]], mode: Optional[str] = None
+        self,
+        messages: list[Dict[str, str]],
+        mode: Optional[str] = None,
+        runtime: Optional[ChatRuntime] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Genera una respuesta de chat con streaming SSE.
@@ -316,11 +342,22 @@ class ChatService:
         Args:
             messages: lista de mensajes {role, content}
             mode: id del modo de redacción; desconocido o None → modo por defecto
+            runtime: proveedor/modelo/esfuerzo de ESTA petición. Si es ``None``
+                se usa el del servidor (las env vars de siempre), que es lo que
+                hace un cliente antiguo que no manda nada.
 
         Yields:
             Eventos SSE formateados (event: type\\ndata: json\\n\\n)
         """
         start_time = time.time()
+
+        if runtime is None:
+            runtime = server_runtime()
+        if runtime is None:
+            yield self._format_sse("error", {"message": NO_KEY_MESSAGE})
+            yield self._format_sse("done", {"total_tokens": 0, "elapsed_ms": 0})
+            return
+
         await self.ensure_tools()
 
         mode_spec = get_mode(mode)
@@ -357,20 +394,24 @@ class ChatService:
 
                 # 1ª ronda (y la de cierre de brechas): forzamos tool use. El
                 # resto en "auto": el modelo decide si necesita más fuentes.
-                tool_choice = "required" if force_tools else "auto"
+                # Donde el proveedor no admite "required" (Gemini) se degrada a
+                # "auto" y el cierre de brechas hace el trabajo.
+                tool_choice = tool_choice_for(runtime.provider, force_tools)
                 force_tools = False
                 try:
-                    response = await self.client.chat.completions.create(
-                        model=OPENAI_MODEL,
+                    response = await runtime.client.chat.completions.create(
+                        model=runtime.model,
                         messages=full_messages,
                         tools=self.tools,
                         tool_choice=tool_choice,
                         max_completion_tokens=OPENAI_MAX_TOKENS,
-                        **_TOOL_PARAMS,
+                        **runtime.tool_params,
                     )
-                except Exception:
-                    logger.exception(
-                        "OpenAI call failed (ronda de tools %s)", round_idx
+                except Exception as exc:
+                    logger.error(
+                        "Llamada al proveedor fallida (ronda de tools %s): %s",
+                        round_idx,
+                        redact(exc),
                     )
                     yield self._format_sse(
                         "error",
@@ -473,25 +514,27 @@ class ChatService:
                     })
 
             yield self._format_sse("sources", {"items": tracker.sources()})
+            # Aditivo: los campos nuevos (provider, effort, effort_applied) los
+            # ignora un cliente antiguo sin enterarse.
             yield self._format_sse(
                 "metadata",
                 {
                     "tool_calls": total_tool_calls,
-                    "model": OPENAI_MODEL,
                     "mode": mode_spec.id,
+                    **runtime.metadata(),
                 },
             )
 
         # ─── Ronda final: respuesta en streaming SIN tools ────────────
         answer = ""
         try:
-            final_stream = await self.client.chat.completions.create(
-                model=OPENAI_MODEL,
+            final_stream = await runtime.client.chat.completions.create(
+                model=runtime.model,
                 messages=full_messages,
                 max_completion_tokens=min(OPENAI_MAX_TOKENS, mode_spec.max_tokens),
                 stream=True,
                 stream_options={"include_usage": True},
-                **_ANSWER_PARAMS,
+                **runtime.answer_params,
             )
             async for chunk in final_stream:
                 if getattr(chunk, "usage", None):
@@ -502,14 +545,16 @@ class ChatService:
                 if delta.content:
                     answer += delta.content
                     yield self._format_sse("token", {"text": delta.content})
-        except Exception:
-            logger.exception("OpenAI stream failed (respuesta final)")
+        except Exception as exc:
+            logger.error("Stream fallido (respuesta final): %s", redact(exc))
             yield self._format_sse(
                 "error", {"message": "Error al generar la respuesta final"}
             )
             return
 
-        suggestions = await self._generate_followups(full_messages, answer, mode_spec)
+        suggestions = await self._generate_followups(
+            runtime, full_messages, answer, mode_spec
+        )
         if suggestions:
             yield self._format_sse("suggestions", {"items": suggestions})
 
@@ -528,7 +573,13 @@ _service: Optional[ChatService] = None
 
 
 def get_chat_service() -> ChatService:
-    """Obtiene el singleton del chat service."""
+    """
+    Obtiene el singleton del chat service.
+
+    Ya NO lanza si falta la key: el servicio es utilizable con la key que traiga
+    el cliente en la cabecera. Quién puede responder y quién no lo decide el
+    router, que es el que ve la petición.
+    """
     global _service
     if _service is None:
         _service = ChatService()
@@ -540,6 +591,9 @@ __all__ = [
     "get_chat_service",
     "build_system_prompt",
     "parse_followups",
+    "build_runtime",
+    "server_runtime",
+    "NO_KEY_MESSAGE",
     "SYSTEM_PROMPT",
     "CHAT_MODES",
     "DEFAULT_MODE",

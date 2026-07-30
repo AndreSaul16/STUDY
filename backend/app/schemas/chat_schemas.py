@@ -22,6 +22,14 @@ class ChatRequest(BaseModel):
     #: Id de la conversación del cliente. Solo eco/telemetría: el historial se
     #: persiste en el SQLite local del navegador, no en el backend.
     conversation_id: Optional[str] = Field(default=None, max_length=64)
+    #: Proveedor, modelo y esfuerzo elegidos por el usuario. Los tres son
+    #: opcionales y TOLERANTES (sin `pattern`): un valor desconocido degrada al
+    #: default en la capa de proveedor, nunca devuelve 422. La API KEY no está
+    #: aquí a propósito: viaja solo en la cabecera X-AI-Api-Key para que no
+    #: acabe en ningún cuerpo persistido ni en un log de acceso.
+    provider: Optional[str] = Field(default=None, max_length=32)
+    model: Optional[str] = Field(default=None, max_length=128)
+    effort: Optional[str] = Field(default=None, max_length=16)
 
 
 class ChatToolCall(BaseModel):
@@ -45,9 +53,15 @@ class ChatModesResponse(BaseModel):
 
 
 class ChatHealthResponse(BaseModel):
-    """Respuesta del health check del chat."""
+    """
+    Respuesta del health check del chat.
+
+    ``has_server_key`` es un booleano y NO la key: sin autenticación, cualquiera
+    con la URL leería la respuesta de este endpoint.
+    """
     healthy: bool
     provider: str
     model: str
     mcp_tools_count: int
+    has_server_key: bool = False
     error: Optional[str] = None
