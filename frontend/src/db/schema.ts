@@ -124,8 +124,28 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     sources_json     TEXT NOT NULL DEFAULT '[]',
     tools_json       TEXT NOT NULL DEFAULT '[]',
     suggestions_json TEXT NOT NULL DEFAULT '[]',
+    meta_json        TEXT,
     created_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+);
+
+-- ─── Ilustraciones generadas ────────────────────────────────────
+-- Los bytes se guardan aquí y NO en el backend: el contenedor de Railway
+-- tiene filesystem efímero, así que una imagen "guardada" allí duraría hasta
+-- el siguiente deploy.
+CREATE TABLE IF NOT EXISTS chat_images (
+    image_id        TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    message_id      TEXT,
+    prompt          TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    mime            TEXT NOT NULL DEFAULT 'image/png',
+    width           INTEGER NOT NULL DEFAULT 0,
+    height          INTEGER NOT NULL DEFAULT 0,
+    bytes           INTEGER NOT NULL DEFAULT 0,
+    data_b64        TEXT NOT NULL,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 -- ─── Índices para rendimiento ───────────────────────────────────
@@ -141,6 +161,7 @@ CREATE INDEX IF NOT EXISTS idx_history_document ON history(document_id);
 CREATE INDEX IF NOT EXISTS idx_history_visited ON history(visited_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages(conversation_id, seq);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_images_conv ON chat_images(conversation_id, created_at DESC);
 
 -- ─── Versión del esquema (para migraciones) ─────────────────────
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -150,6 +171,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 INSERT OR IGNORE INTO schema_version (version) VALUES (3);
+INSERT OR IGNORE INTO schema_version (version) VALUES (4);
 `;
 
 /**
@@ -189,6 +211,35 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages(conversation_
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
 
 INSERT OR IGNORE INTO schema_version (version) VALUES (3);
+`;
+
+/**
+ * Migración a la v4 — ilustraciones generadas y metadatos del mensaje.
+ *
+ * Aditiva igual que la v3: solo CREATE IF NOT EXISTS. La columna `meta_json`
+ * no se puede añadir aquí (SQLite no tiene `ADD COLUMN IF NOT EXISTS`); se
+ * añade en `migrateImageTables()` con la guarda de PRAGMA table_info, el mismo
+ * patrón que `migratePublicationScopes`.
+ */
+export const LOCAL_DB_SCHEMA_IMAGES = `
+CREATE TABLE IF NOT EXISTS chat_images (
+    image_id        TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    message_id      TEXT,
+    prompt          TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    mime            TEXT NOT NULL DEFAULT 'image/png',
+    width           INTEGER NOT NULL DEFAULT 0,
+    height          INTEGER NOT NULL DEFAULT 0,
+    bytes           INTEGER NOT NULL DEFAULT 0,
+    data_b64        TEXT NOT NULL,
+    created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_images_conv ON chat_images(conversation_id, created_at DESC);
+
+INSERT OR IGNORE INTO schema_version (version) VALUES (4);
 `;
 
 /**

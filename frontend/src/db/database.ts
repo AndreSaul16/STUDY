@@ -18,6 +18,7 @@ import {
   LOCAL_DB_SCHEMA_BASE,
   LOCAL_DB_SCHEMA_CHAT,
   LOCAL_DB_SCHEMA_FTS5,
+  LOCAL_DB_SCHEMA_IMAGES,
 } from "@/db/schema";
 
 const INDEXED_DB_NAME = "study-workspace";
@@ -57,6 +58,7 @@ function applySchema(database: Database): void {
   database.exec(LOCAL_DB_SCHEMA_BASE);
   migratePublicationScopes(database);
   migrateChatTables(database);
+  migrateImageTables(database);
 
   // 2. Detectar FTS5 y aplicar schema FTS solo si está soportado
   fts5Available = detectFTS5(database);
@@ -100,6 +102,23 @@ function migratePublicationScopes(database: Database): void {
  */
 function migrateChatTables(database: Database): void {
   database.exec(LOCAL_DB_SCHEMA_CHAT);
+}
+
+/**
+ * Migra a la v4 — ilustraciones generadas y metadatos del mensaje.
+ *
+ * Mismo patrón que las anteriores: aditiva, idempotente y sin un solo DROP.
+ * La columna `meta_json` va con la guarda de PRAGMA table_info porque SQLite
+ * no tiene `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` y un ALTER repetido
+ * lanza.
+ */
+function migrateImageTables(database: Database): void {
+  database.exec(LOCAL_DB_SCHEMA_IMAGES);
+
+  const columns = database.exec("PRAGMA table_info(chat_messages)")[0]?.values ?? [];
+  if (!columns.some((column) => column[1] === "meta_json")) {
+    database.exec("ALTER TABLE chat_messages ADD COLUMN meta_json TEXT");
+  }
 }
 
 // ─── IndexedDB helpers ───────────────────────────────────────────
@@ -198,6 +217,7 @@ function ensureSchema(database: Database): void {
   } else {
     migratePublicationScopes(database);
     migrateChatTables(database);
+    migrateImageTables(database);
     // Schema base ya aplicado — pero re-detectar FTS5 por si la DB
     // fue creada con un motor distinto al actual
     fts5Available = detectFTS5(database);

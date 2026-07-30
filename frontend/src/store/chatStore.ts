@@ -27,6 +27,7 @@ import {
 } from "@/db/repositories/conversationsRepository";
 import {
   DEFAULT_CHAT_MODE,
+  type ChatMessageMeta,
   type ChatSource,
   type ChatUiMessage,
   type ToolActivity,
@@ -82,7 +83,11 @@ interface ChatState {
   completeActivity: (name: string, summary: string) => void;
   appendToken: (text: string) => void;
   setPendingSources: (sources: ChatSource[]) => void;
-  finishTurn: (content: string, suggestions: string[]) => void;
+  finishTurn: (
+    content: string,
+    suggestions: string[],
+    meta?: ChatMessageMeta,
+  ) => void;
   abortTurn: (partial: string) => void;
   setSuggestionsForLast: (suggestions: string[]) => void;
 }
@@ -141,6 +146,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 sources: row.sources,
                 tools: row.tools,
                 suggestions: row.suggestions,
+                meta: row.meta,
                 createdAt: row.createdAt * 1000,
               })),
             }
@@ -183,6 +189,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sources: row.sources,
         tools: row.tools,
         suggestions: row.suggestions,
+        meta: row.meta,
         createdAt: row.createdAt * 1000,
       })),
       streamingContent: "",
@@ -310,7 +317,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   setPendingSources: (pendingSources) => set({ pendingSources }),
 
-  finishTurn: (content, suggestions) => {
+  finishTurn: (content, suggestions, meta) => {
     const { conversationId, mode, activity, pendingSources } = get();
     if (!conversationId || !content) {
       set({ isStreaming: false, streamingContent: "", activity: [] });
@@ -322,6 +329,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       sources: pendingSources,
       tools: activity,
       suggestions,
+      meta,
     };
 
     appendMessage({
@@ -333,6 +341,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       sources: pendingSources,
       tools: activity,
       suggestions,
+      meta,
     });
 
     set({

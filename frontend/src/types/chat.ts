@@ -42,6 +42,26 @@ export interface ToolActivity {
   summary?: string;
 }
 
+/**
+ * Con qué se generó un mensaje. Llega en el evento `metadata` y se persiste
+ * junto al mensaje: releyendo una conversación de hace un mes hay que poder
+ * saber si la escribió el modelo bueno o el barato.
+ *
+ * Todo opcional a propósito: un backend anterior no manda estos campos.
+ */
+export interface ChatMessageMeta {
+  provider?: string;
+  model?: string;
+  /** Esfuerzo pedido (id STUDY: "alto"). */
+  effort?: string;
+  /** Esfuerzo que el proveedor aplicó de verdad ("high"). Puede diferir. */
+  effortApplied?: string;
+  /** Informe de investigación profunda: cambia cómo se presenta el mensaje. */
+  deep?: boolean;
+  /** Publicaciones leídas en un informe profundo. */
+  docs?: number;
+}
+
 export interface ChatUiMessage {
   id: string;
   role: "user" | "assistant";
@@ -50,6 +70,7 @@ export interface ChatUiMessage {
   sources: ChatSource[];
   tools: ToolActivity[];
   suggestions: string[];
+  meta?: ChatMessageMeta;
   createdAt: number;
 }
 

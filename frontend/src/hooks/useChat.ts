@@ -5,8 +5,14 @@ import {
   buildRequestMessages,
   CHAT_STREAM_ENDPOINT,
 } from "@/services/chatClient";
+import { aiRequestBody, aiRequestHeaders } from "@/store/aiSettingsStore";
 import { useChatStore } from "@/store/chatStore";
-import type { ChatSource, ChatUiMessage, ToolActivity } from "@/types/chat";
+import type {
+  ChatMessageMeta,
+  ChatSource,
+  ChatUiMessage,
+  ToolActivity,
+} from "@/types/chat";
 
 export type { ToolActivity } from "@/types/chat";
 
@@ -78,6 +84,20 @@ function parseStringList(raw: unknown): string[] {
   return raw.filter((x): x is string => typeof x === "string" && x.trim() !== "");
 }
 
+/** Metadatos del evento `metadata`. Todo opcional: el backend puede ser viejo. */
+function parseMeta(raw: Record<string, unknown>): ChatMessageMeta | undefined {
+  const text = (key: string): string | undefined =>
+    typeof raw[key] === "string" && raw[key] ? (raw[key] as string) : undefined;
+
+  const meta: ChatMessageMeta = {
+    provider: text("provider"),
+    model: text("model"),
+    effort: text("effort"),
+    effortApplied: text("effort_applied"),
+  };
+  return Object.values(meta).some(Boolean) ? meta : undefined;
+}
+
 /**
  * useChat — hook para el chat IA con OpenAI + MCP.
  *
@@ -119,6 +139,7 @@ export function useChat(): UseChatReturn {
 
     let fullContent = "";
     let suggestions: string[] = [];
+    let meta: ChatMessageMeta | undefined;
 
     try {
       const response = await fetch(CHAT_STREAM_ENDPOINT, {
@@ -126,11 +147,16 @@ export function useChat(): UseChatReturn {
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
+          // La API key del usuario, si la hay. Solo aquí: nunca en el cuerpo
+          // ni en la URL. Sin key configurada esto es `{}` y la petición sale
+          // exactamente igual que antes de que existiera el modo BYOK.
+          ...aiRequestHeaders(),
         },
         body: JSON.stringify({
           messages: requestMessages,
           mode,
           conversation_id: conversationId,
+          ...aiRequestBody(),
         }),
         signal: controller.signal,
       });
@@ -188,8 +214,11 @@ export function useChat(): UseChatReturn {
               suggestions = parseStringList(parsed.data.items);
               break;
             case "metadata":
-              // Reservado para telemetría (model, mode, tool_calls). No hay
-              // nada que pintar todavía; se ignora sin romper.
+              // Qué modelo respondió de verdad y con cuánto esfuerzo. Se pinta
+              // en el pie del mensaje y se persiste con él: sin esto, releyendo
+              // una conversación de hace un mes no hay forma de saber si la
+              // escribió el modelo bueno o el barato.
+              meta = parseMeta(parsed.data);
               break;
             case "token":
               fullContent += String(parsed.data.text ?? "");
@@ -211,7 +240,7 @@ export function useChat(): UseChatReturn {
       }
 
       if (mountedRef.current) {
-        useChatStore.getState().finishTurn(fullContent, suggestions);
+        useChatStore.getState().finishTurn(fullContent, suggestions, meta);
       }
     } catch (err) {
       if (controller.signal.aborted) {

@@ -10,7 +10,7 @@
  */
 
 import { queryAll, queryOne, execute, executeTransaction } from "@/db/database";
-import type { ChatSource, ToolActivity } from "@/types/chat";
+import type { ChatMessageMeta, ChatSource, ToolActivity } from "@/types/chat";
 
 export interface ConversationRow {
   conversationId: string;
@@ -31,6 +31,8 @@ export interface ChatMessageRow {
   sources: ChatSource[];
   tools: ToolActivity[];
   suggestions: string[];
+  /** Proveedor, modelo y esfuerzo con los que se generó (columna v4). */
+  meta?: ChatMessageMeta;
   createdAt: number;
 }
 
@@ -56,6 +58,7 @@ interface RawChatMessage {
   sources_json: string;
   tools_json: string;
   suggestions_json: string;
+  meta_json?: string | null;
   created_at: number;
 }
 
@@ -83,6 +86,19 @@ function toConversation(row: RawConversation): ConversationRow {
   };
 }
 
+/** Igual que `parseJsonArray`, pero para el objeto de metadatos. */
+function parseJsonObject<T>(raw: string | null | undefined): T | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as T)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function toMessage(row: RawChatMessage): ChatMessageRow {
   return {
     messageId: row.message_id,
@@ -94,6 +110,7 @@ function toMessage(row: RawChatMessage): ChatMessageRow {
     sources: parseJsonArray<ChatSource>(row.sources_json),
     tools: parseJsonArray<ToolActivity>(row.tools_json),
     suggestions: parseJsonArray<string>(row.suggestions_json),
+    meta: parseJsonObject<ChatMessageMeta>(row.meta_json),
     createdAt: row.created_at,
   };
 }
@@ -171,8 +188,8 @@ export function appendMessage(
     {
       sql: `INSERT INTO chat_messages
               (message_id, conversation_id, seq, role, content, mode,
-               sources_json, tools_json, suggestions_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               sources_json, tools_json, suggestions_json, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [
         msg.messageId,
         msg.conversationId,
@@ -183,6 +200,7 @@ export function appendMessage(
         JSON.stringify(msg.sources ?? []),
         JSON.stringify(msg.tools ?? []),
         JSON.stringify(msg.suggestions ?? []),
+        msg.meta ? JSON.stringify(msg.meta) : null,
       ],
     },
     {
