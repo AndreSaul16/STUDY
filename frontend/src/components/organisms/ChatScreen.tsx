@@ -7,10 +7,30 @@ import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { useChatModes } from "@/components/molecules/ModePicker";
 import { ChatComposer } from "@/components/molecules/ChatComposer";
 import { ChatMessage } from "@/components/molecules/ChatMessage";
+import { takePendingChatContext } from "@/components/molecules/ContextMenu";
 import { FollowUpChips } from "@/components/molecules/FollowUpChips";
 import { ConversationsDrawer } from "@/components/organisms/ConversationsDrawer";
+import { conversationToMarkdown, slugify } from "@/utils/plainText";
 import { IconArrowDown, IconGrip } from "@/components/atoms/Icons";
-import type { ToolActivity } from "@/types/chat";
+import type { ChatUiMessage, ToolActivity } from "@/types/chat";
+
+/**
+ * Descarga la conversación como .md.
+ *
+ * Un fichero y no el portapapeles: una conversación larga con sus fuentes no
+ * cabe cómodamente en un pegado, y en Markdown se abre en cualquier sitio.
+ */
+function exportConversation(title: string, messages: ChatUiMessage[]): void {
+  const markdown = conversationToMarkdown(title, messages);
+  const url = URL.createObjectURL(
+    new Blob([markdown], { type: "text/markdown;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `study-${slugify(title)}-${new Date().toISOString().slice(0, 10)}.md`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 interface ChatScreenProps {
   className?: string;
@@ -58,6 +78,16 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
     activity.length,
   ]);
 
+  // Texto que viene del lector ("Preguntar a la IA" sobre una selección). Se
+  // antepone al composer SIN enviar: el usuario todavía tiene que decir qué
+  // quiere que se haga con ese texto.
+  useEffect(() => {
+    const pending = takePendingChatContext();
+    if (!pending) return;
+    setInput((current) => pending + current);
+    composerRef.current?.querySelector("textarea")?.focus();
+  }, []);
+
   // Repulsar "Chat" en la barra inferior baja al final de la conversación.
   // Evento del DOM y no una prop: la barra vive fuera de este árbol.
   useEffect(() => {
@@ -104,6 +134,17 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
             {title}
           </p>
 
+          {messages.length > 0 && (
+            <button
+              onClick={() => exportConversation(title, messages)}
+              aria-label="Exportar la conversación a Markdown"
+              title="Exportar a .md"
+              className="flex h-11 w-11 items-center justify-center rounded-full text-muted-light dark:text-muted-dark"
+            >
+              <IconArrowDown width={17} height={17} />
+            </button>
+          )}
+
           <button
             onClick={newConversation}
             aria-label="Nueva conversación"
@@ -135,8 +176,13 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
           />
         )}
 
-        {messages.map((message) => (
-          <ChatMessage key={message.id} message={message} />
+        {messages.map((message, i) => (
+          <ChatMessage
+            key={message.id}
+            message={message}
+            isLast={i === messages.length - 1 && message.role === "assistant"}
+            onRetry={retryLast}
+          />
         ))}
 
         {isStreaming && !streamingContent && <ToolActivityTrail activity={activity} />}

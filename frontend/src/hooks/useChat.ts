@@ -255,15 +255,31 @@ export function useChat(): UseChatReturn {
     useChatStore.getState().newConversation();
   }, []);
 
-  /** Reintenta el último turno tras un fallo de red, sin duplicar la pregunta. */
+  /**
+   * Reintenta.
+   *
+   * Dos situaciones distintas con el mismo botón:
+   *  - la última fue del usuario (falló la red): se reabre el stream SIN
+   *    volver a insertar la pregunta, que ya está guardada;
+   *  - la última fue del asistente ("volver a preguntar"): se manda otra vez
+   *    la misma pregunta como turno nuevo, para no perder la respuesta previa.
+   */
   const retryLast = useCallback(() => {
     const store = useChatStore.getState();
     if (store.isStreaming || !store.conversationId) return;
-    if (store.messages[store.messages.length - 1]?.role !== "user") return;
 
-    store.resumeTurn();
-    void runTurn(store.conversationId);
-  }, [runTurn]);
+    const last = store.messages[store.messages.length - 1];
+    if (!last) return;
+
+    if (last.role === "user") {
+      store.resumeTurn();
+      void runTurn(store.conversationId);
+      return;
+    }
+
+    const lastUser = [...store.messages].reverse().find((m) => m.role === "user");
+    if (lastUser) void send(lastUser.content);
+  }, [runTurn, send]);
 
   return {
     messages,

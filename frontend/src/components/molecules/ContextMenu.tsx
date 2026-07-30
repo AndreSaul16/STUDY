@@ -1,8 +1,24 @@
 import { useEffect, useRef } from "react";
 import type { SelectionRange, HighlightColor } from "@/types/domain";
-import { HIGHLIGHT_COLORS } from "@/types/domain";
+import { APP_VIEWS, HIGHLIGHT_COLORS } from "@/types/domain";
 import { cn } from "@/utils/cn";
-import { IconClose, IconNote } from "@/components/atoms/Icons";
+import { useUIStore } from "@/store/uiStore";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { IconChat, IconClose, IconNote } from "@/components/atoms/Icons";
+
+/**
+ * Texto seleccionado que espera al composer del chat.
+ *
+ * Módulo y no store: es un traspaso de un solo uso entre dos pantallas, y
+ * meterlo en zustand obligaría a limpiarlo a mano en cada montaje.
+ */
+let pendingChatContext: string | null = null;
+
+export function takePendingChatContext(): string | null {
+  const text = pendingChatContext;
+  pendingChatContext = null;
+  return text;
+}
 
 interface ContextMenuProps {
   selection: SelectionRange;
@@ -31,6 +47,8 @@ export function ContextMenu({
   onAddNote,
 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const setView = useUIStore((s) => s.setView);
+  const { copy } = useCopyToClipboard();
 
   // Posición: encima de la selección, centrado.
   // NOTA (B12): selection.rect se calcula en useTextSelection con debounce 180ms.
@@ -41,8 +59,9 @@ export function ContextMenu({
   // Para v2: escuchar scroll y re-posicionar o cerrar.
   const rect = selection.rect;
   // En pantallas estrechas el menú se ajusta al ancho disponible en vez de
-  // quedarse fijo en 280px y salirse por el borde.
-  const menuWidth = Math.min(288, window.innerWidth - 24);
+  // quedarse fijo y salirse por el borde. Con las acciones de copiar y de
+  // preguntar a la IA ya no caben en 288px.
+  const menuWidth = Math.min(360, window.innerWidth - 24);
   const menuHeight = 56;
 
   let x = rect.left + rect.width / 2 - menuWidth / 2;
@@ -90,6 +109,9 @@ export function ContextMenu({
       className={cn(
         "fixed z-[100] animate-context-pop",
         "flex items-center gap-1 rounded-full",
+        // Si aun así no cabe (móvil muy estrecho), la fila desliza en vez de
+        // desbordar por el borde de la pantalla.
+        "overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         "bg-ink-200 p-1.5 shadow-[var(--shadow-lift)]",
         "ring-1 ring-ink-50/10",
       )}
@@ -107,7 +129,7 @@ export function ContextMenu({
               onClose();
             }}
             className={cn(
-              "h-7 w-7 rounded-full transition-transform",
+              "h-7 w-7 shrink-0 rounded-full transition-transform",
               "hover:scale-110 active:scale-95",
               "ring-1 ring-black/10 dark:ring-white/10",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-paper-50",
@@ -128,7 +150,7 @@ export function ContextMenu({
           onClose();
         }}
         className={cn(
-          "flex h-8 items-center gap-1.5 rounded-full px-3",
+          "flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3",
           "text-paper-50 hover:bg-paper-50/10",
           "font-ui text-xs font-medium tracking-wide",
           "transition-colors",
@@ -138,13 +160,52 @@ export function ContextMenu({
         Nota
       </button>
 
+      {/* Copiar la selección — hasta ahora no había forma de hacerlo sin
+          pelearse con el menú nativo del navegador. */}
+      <button
+        role="menuitem"
+        aria-label="Copiar selección"
+        onClick={() => {
+          void copy(selection.selectedText);
+          onClose();
+        }}
+        className={cn(
+          "flex h-8 shrink-0 items-center rounded-full px-3",
+          "text-paper-50 hover:bg-paper-50/10",
+          "font-ui text-xs font-medium tracking-wide",
+          "transition-colors",
+        )}
+      >
+        Copiar
+      </button>
+
+      {/* Puente al chat: el texto seleccionado entra como contexto. */}
+      <button
+        role="menuitem"
+        aria-label="Preguntar a la IA sobre la selección"
+        onClick={() => {
+          pendingChatContext = `> «${selection.selectedText.trim()}»\n\n`;
+          setView(APP_VIEWS.CHAT);
+          onClose();
+        }}
+        className={cn(
+          "flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3",
+          "text-paper-50 hover:bg-paper-50/10",
+          "font-ui text-xs font-medium tracking-wide",
+          "transition-colors",
+        )}
+      >
+        <IconChat width={14} height={14} />
+        IA
+      </button>
+
       {/* Close */}
       <button
         role="menuitem"
         aria-label="Cerrar"
         onClick={onClose}
         className={cn(
-          "ml-auto flex h-8 w-8 items-center justify-center rounded-full",
+          "ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
           "text-paper-50/60 hover:bg-paper-50/10 hover:text-paper-50",
           "transition-colors",
         )}
