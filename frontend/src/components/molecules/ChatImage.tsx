@@ -20,6 +20,36 @@ function toBlob(image: ChatImageRow): Blob {
 }
 
 /**
+ * La imagen como PNG, reconvirtiéndola si hace falta.
+ *
+ * El portapapeles de los navegadores **solo acepta PNG**, y al proveedor se le
+ * pide WebP (pesa la tercera parte y la base entera se serializa en cada
+ * guardado). Sin esta conversión el botón "Copiar" no aparecía nunca: la
+ * condición era `mime === "image/png"` y con el proveedor por defecto eso es
+ * falso siempre.
+ */
+async function toPngBlob(image: ChatImageRow): Promise<Blob> {
+  const original = toBlob(image);
+  if (image.mime === "image/png") return original;
+
+  const bitmap = await createImageBitmap(original);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Sin contexto 2D para convertir la imagen.");
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("No se pudo convertir."))),
+      "image/png",
+    );
+  });
+}
+
+/**
  * ChatImage — una ilustración generada, con sus acciones.
  *
  * **Descargar va primero a propósito.** Solo se guardan las 24 últimas
@@ -27,9 +57,9 @@ function toBlob(image: ChatImageRow): Blob {
  * respaldo que no caduca. Compartir y copiar son comodidad; descargar es la
  * red de seguridad.
  *
- * Copiar solo aparece si el portapapeles admite ese tipo: el WebP no se puede
- * pegar en casi ningún sitio, y un botón que falla en silencio es peor que un
- * botón ausente.
+ * Copiar convierte a PNG antes de escribir: el portapapeles de los navegadores
+ * no acepta otra cosa y al proveedor se le pide WebP. Antes se comprobaba
+ * `mime === "image/png"` y el botón, sencillamente, no salía nunca.
  */
 export function ChatImage({ image, onDeleted, onRegenerate }: ChatImageProps) {
   const { copy } = useCopyToClipboard();
@@ -41,7 +71,7 @@ export function ChatImage({ image, onDeleted, onRegenerate }: ChatImageProps) {
     typeof window !== "undefined" &&
     typeof window.ClipboardItem !== "undefined" &&
     Boolean(navigator.clipboard?.write) &&
-    image.mime === "image/png";
+    typeof window.createImageBitmap === "function";
 
   const download = () => {
     const url = URL.createObjectURL(toBlob(image));
@@ -70,8 +100,11 @@ export function ChatImage({ image, onDeleted, onRegenerate }: ChatImageProps) {
 
   const copyImage = async () => {
     try {
+      // La promesa va DENTRO del ClipboardItem, no antes del `write`: Safari
+      // exige que la escritura salga del propio gesto del usuario y un `await`
+      // por delante ya la deja fuera.
       await navigator.clipboard.write([
-        new ClipboardItem({ [image.mime]: toBlob(image) }),
+        new ClipboardItem({ "image/png": toPngBlob(image) }),
       ]);
       setStatus("Copiada.");
     } catch {
