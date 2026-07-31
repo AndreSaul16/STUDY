@@ -30,7 +30,7 @@ import json
 import logging
 import os
 import time
-from typing import AsyncGenerator, Dict, Any, List, Optional, Sequence
+from typing import AsyncGenerator, Dict, Any, Iterator, List, Optional, Sequence
 
 from .chat_modes import DEFAULT_MODE, CHAT_MODES, ModeSpec, get_mode, list_modes
 from .chat_providers import (
@@ -354,8 +354,8 @@ class ChatService:
         if runtime is None:
             runtime = server_runtime()
         if runtime is None:
-            yield self._format_sse("error", {"message": NO_KEY_MESSAGE})
-            yield self._format_sse("done", {"total_tokens": 0, "elapsed_ms": 0})
+            for event in self._fail(NO_KEY_MESSAGE, 0, start_time):
+                yield event
             return
 
         await self.ensure_tools()
@@ -413,10 +413,12 @@ class ChatService:
                         round_idx,
                         redact(exc),
                     )
-                    yield self._format_sse(
-                        "error",
-                        {"message": "Error al conectar con el proveedor de IA"},
-                    )
+                    for event in self._fail(
+                        "Error al conectar con el proveedor de IA",
+                        total_tokens,
+                        start_time,
+                    ):
+                        yield event
                     return
 
                 if getattr(response, "usage", None):
@@ -513,17 +515,23 @@ class ChatService:
                         "content": content,
                     })
 
-            yield self._format_sse("sources", {"items": tracker.sources()})
-            # Aditivo: los campos nuevos (provider, effort, effort_applied) los
-            # ignora un cliente antiguo sin enterarse.
-            yield self._format_sse(
-                "metadata",
-                {
-                    "tool_calls": total_tool_calls,
-                    "mode": mode_spec.id,
-                    **runtime.metadata(),
-                },
-            )
+        # FUERA del `if self.tools:` a propósito. Sin herramientas (el MCP caído
+        # y las nativas desactivadas) no hay fuentes que enviar, pero el
+        # `metadata` sigue haciendo falta: es lo que se persiste con el mensaje
+        # y lo que pinta el pie "modelo · esfuerzo". Dentro del `if`, esas
+        # respuestas se guardaban sin `meta` y releerlas no decía quién las
+        # había escrito.
+        yield self._format_sse("sources", {"items": tracker.sources()})
+        # Aditivo: los campos nuevos (provider, effort, effort_applied) los
+        # ignora un cliente antiguo sin enterarse.
+        yield self._format_sse(
+            "metadata",
+            {
+                "tool_calls": total_tool_calls,
+                "mode": mode_spec.id,
+                **runtime.metadata(),
+            },
+        )
 
         # ─── Ronda final: respuesta en streaming SIN tools ────────────
         answer = ""
@@ -547,9 +555,10 @@ class ChatService:
                     yield self._format_sse("token", {"text": delta.content})
         except Exception as exc:
             logger.error("Stream fallido (respuesta final): %s", redact(exc))
-            yield self._format_sse(
-                "error", {"message": "Error al generar la respuesta final"}
-            )
+            for event in self._fail(
+                "Error al generar la respuesta final", total_tokens, start_time
+            ):
+                yield event
             return
 
         suggestions = await self._generate_followups(
@@ -566,6 +575,26 @@ class ChatService:
     def _format_sse(self, event: str, data: Dict[str, Any]) -> str:
         """Formatea un evento SSE."""
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+    def _fail(
+        self, message: str, total_tokens: int, start_time: float
+    ) -> Iterator[str]:
+        """
+        Aborta el turno: un ``error`` y, SIEMPRE, un ``done``.
+
+        El ``done`` no es decorativo. Es la única señal de "esto se ha acabado"
+        que tiene el cliente; cortar el stream sin él deja al consumidor
+        esperando un final que no llega. ``research_service`` y el propio
+        ``chat_router`` ya cerraban así, y estas dos ramas no.
+        """
+        yield self._format_sse("error", {"message": message})
+        yield self._format_sse(
+            "done",
+            {
+                "total_tokens": total_tokens,
+                "elapsed_ms": int((time.time() - start_time) * 1000),
+            },
+        )
 
 
 # Singleton

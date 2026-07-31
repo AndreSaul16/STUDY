@@ -554,6 +554,12 @@ async def run_research(
                 delta = chunk.choices[0].delta
                 if delta.content:
                     answer += delta.content
+                    # El informe se va guardando en el trabajo según se
+                    # escribe, no solo al final: la instantánea de
+                    # ``GET /api/research/{id}`` se anuncia como respaldo del
+                    # SSE y devolvía la respuesta vacía durante toda la
+                    # redacción, que es justo cuando hay algo que rescatar.
+                    job.answer = answer
                     job.append("token", {"text": delta.content})
         except Exception as exc:
             logger.error("Síntesis fallida: %s", redact(exc))
