@@ -120,11 +120,22 @@ test.describe("Responsive", () => {
   test("el documento no hace scroll horizontal", async ({ page }) => {
     await abrirApp(page);
 
-    const desbordado = await page.evaluate(
-      () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
-    );
-
-    expect(desbordado).toBe(false);
+    // `expect.poll` y no una medición suelta: el composer visible no garantiza
+    // que el layout haya asentado (quedan las fuentes y el primer pintado de
+    // los paneles). Medir una sola vez captura un desbordamiento transitorio
+    // que el usuario nunca llega a ver. Aquí se reintenta hasta que la medida
+    // es estable, que es lo que de verdad se quiere afirmar.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              document.documentElement.scrollWidth >
+              document.documentElement.clientWidth + 1,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(false);
   });
 
   test("los objetivos táctiles de la cabecera llegan a 44px", async ({ page }, testInfo) => {

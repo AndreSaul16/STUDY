@@ -48,7 +48,14 @@ test.describe("Navegación", () => {
 
     await page.reload();
 
-    await expect(page.getByRole("heading", { name: "Más" })).toBeVisible();
+    // Timeout ampliado a propósito: una recarga vuelve a inicializar el WASM de
+    // sql.js, y en la vista "más" no hay composer que sirva de señal de listo
+    // como en `abrirApp`. Con los 7 s por defecto y varios trabajadores a la
+    // vez, el arranque en frío se pasa del plazo y el test falla por lentitud,
+    // no por haber perdido la vista.
+    await expect(page.getByRole("heading", { name: "Más" })).toBeVisible({
+      timeout: 20_000,
+    });
   });
 
   test("el destino activo se marca para lectores de pantalla", async ({ page }) => {
