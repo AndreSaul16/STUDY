@@ -241,17 +241,20 @@ export function togglePinned(conversationId: string): boolean {
   return next === 1;
 }
 
-export function touchConversation(conversationId: string): void {
-  execute(
-    `UPDATE conversations SET updated_at = strftime('%s','now') WHERE conversation_id = ?`,
-    [conversationId],
-  );
-}
-
-/** Borra la conversación y sus mensajes (el ON DELETE CASCADE no está activo
- *  por defecto en sql.js, así que lo hacemos explícito). */
+/**
+ * Borra la conversación, sus mensajes y sus ilustraciones.
+ *
+ * El `ON DELETE CASCADE` no está activo por defecto en sql.js, así que va
+ * explícito. Y las imágenes también: cada una son hasta 2 MB de base64 que se
+ * quedaban en la base —contando en el medidor de Ajustes y serializándose
+ * enteros en cada guardado— sin ninguna conversación desde la que verlos.
+ */
 export function deleteConversation(conversationId: string): void {
   executeTransaction([
+    {
+      sql: `DELETE FROM chat_images WHERE conversation_id = ?`,
+      params: [conversationId],
+    },
     {
       sql: `DELETE FROM chat_messages WHERE conversation_id = ?`,
       params: [conversationId],
@@ -263,17 +266,31 @@ export function deleteConversation(conversationId: string): void {
   ]);
 }
 
-/** Elimina las conversaciones que se crearon y nunca recibieron un mensaje. */
+/**
+ * Elimina las conversaciones que se crearon y nunca recibieron un mensaje.
+ *
+ * "Sin mensajes" no quiere decir "sin nada": una ilustración se puede generar
+ * antes de que la respuesta se persista, así que se limpian también.
+ */
 export function pruneEmptyConversations(keepId?: string): void {
-  execute(
-    `DELETE FROM conversations
-     WHERE conversation_id <> COALESCE(?, '')
-       AND NOT EXISTS (
-             SELECT 1 FROM chat_messages m
-             WHERE m.conversation_id = conversations.conversation_id
-           )`,
-    [keepId ?? null],
-  );
+  const vacias = `
+    SELECT c.conversation_id FROM conversations c
+    WHERE c.conversation_id <> COALESCE(?, '')
+      AND NOT EXISTS (
+            SELECT 1 FROM chat_messages m
+            WHERE m.conversation_id = c.conversation_id
+          )`;
+
+  executeTransaction([
+    {
+      sql: `DELETE FROM chat_images WHERE conversation_id IN (${vacias})`,
+      params: [keepId ?? null],
+    },
+    {
+      sql: `DELETE FROM conversations WHERE conversation_id IN (${vacias})`,
+      params: [keepId ?? null],
+    },
+  ]);
 }
 
 /** Título automático: las primeras palabras del primer mensaje del usuario. */

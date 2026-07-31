@@ -361,7 +361,14 @@ export function exportDatabase(): Uint8Array {
   return getDatabase().export();
 }
 
-/** Importa una DB desde bytes (reemplaza la actual). */
+/**
+ * Importa una DB desde bytes (reemplaza la actual).
+ *
+ * Con `ensureSchema` a propósito: una copia de seguridad puede ser de hace
+ * meses y traer un esquema viejo. Sin migrarla al restaurar, el primer mensaje
+ * que se guardaba lanzaba `no such column: meta_json` y el chat dejaba de
+ * persistir sin decir nada.
+ */
 export async function importDatabase(bytes: Uint8Array): Promise<void> {
   if (db) {
     db.close();
@@ -370,6 +377,7 @@ export async function importDatabase(bytes: Uint8Array): Promise<void> {
     SQL = await initSqlJs({ locateFile: () => SQL_WASM_PATH });
   }
   db = new SQL.Database(bytes);
+  ensureSchema(db);
   await saveDatabase();
 }
 
