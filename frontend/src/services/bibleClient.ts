@@ -41,7 +41,16 @@ export function fetchBooks(): Promise<BibleBook[]> {
         if (!response.ok) throw new Error("No se pudo cargar el índice bíblico");
         return response.json();
       })
-      .then((data: { books: BibleBook[] }) => data.books)
+      .then((data: unknown) => {
+        // Comprobado y no dado por hecho: con una respuesta malformada,
+        // `data.books` era `undefined` y el panel reventaba al iterarlo. Un
+        // error con mensaje se puede enseñar; un `undefined` se propaga.
+        const books = (data as { books?: unknown })?.books;
+        if (!Array.isArray(books)) {
+          throw new Error("El índice bíblico llegó en un formato inesperado");
+        }
+        return books as BibleBook[];
+      })
       .catch((error) => {
         // No dejar cacheada una promesa fallida: el siguiente intento debe
         // volver a pedirlo (p. ej. si el usuario recupera la conexión).
