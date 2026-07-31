@@ -136,6 +136,12 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     set({ hydrated: true, settings: readSettings() });
     const catalog = await fetchProviders();
     set({ providers: catalog.providers, server: catalog.server });
+    // La lista de modelos se carga sola. Antes solo se llenaba si ibas a
+    // Ajustes y pulsabas "Comprobar y cargar modelos", así que el selector
+    // rápido del chat no ofrecía NUNCA ningún modelo y parecía roto.
+    // `/api/ai/models` responde sin key (devuelve el catálogo de respaldo),
+    // así que esto funciona igual en modo servidor que con key propia.
+    await get().refreshModels("chat");
   },
 
   setProvider: (provider) => {
@@ -143,6 +149,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     persist(set, next);
     // La lista de modelos es de OTRO proveedor: mostrarla sería mentir.
     set({ models: [], modelsError: null, modelsNotice: null, keyStatus: "idle" });
+    void get().refreshModels("chat");
   },
 
   setApiKey: (apiKey) => {
@@ -246,8 +253,14 @@ export function aiRequestHeaders(): Record<string, string> {
 /**
  * Campos del cuerpo. Nunca la key: eso solo va en la cabecera.
  *
- * Se omiten los campos vacíos para que un usuario sin configurar mande
- * exactamente el mismo cuerpo de siempre.
+ * El esfuerzo viaja SIEMPRE. Antes se enviaba solo si había key propia o
+ * modelo elegido, y como lo normal es usar la key del servidor, cambiar el
+ * esfuerzo no hacía absolutamente nada: se guardaba en el dispositivo y ahí se
+ * quedaba. El backend acepta modelo y esfuerzo también en modo servidor
+ * (CHAT_ALLOW_CLIENT_MODEL), así que no hay razón para retenerlos.
+ *
+ * `provider` sí depende de la key: en modo servidor el proveedor lo decide el
+ * servidor, y mandarlo solo confundiría.
  */
 export function aiRequestBody(): {
   provider?: string;
@@ -256,11 +269,11 @@ export function aiRequestBody(): {
 } {
   const { settings } = useAiSettingsStore.getState();
   const model = currentModel();
-  const configured = Boolean(currentApiKey()) || Boolean(model);
-  if (!configured) return {};
 
   return {
-    ...(settings.provider ? { provider: settings.provider } : {}),
+    ...(currentApiKey() && settings.provider
+      ? { provider: settings.provider }
+      : {}),
     ...(model ? { model } : {}),
     ...(settings.effort ? { effort: settings.effort } : {}),
   };

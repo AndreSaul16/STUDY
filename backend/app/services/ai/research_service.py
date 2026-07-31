@@ -379,6 +379,13 @@ async def run_research(
         rounds = 0
         gaps: List[str] = []
 
+        # Reparto POR SUB-PREGUNTA y no un bote común. Con un solo contador
+        # global, la primera sub-pregunta se comía todas las rondas y las demás
+        # entraban con la condición ya falsa: se marcaban hechas sin haber
+        # consultado nada, y el informe hablaba solo del primer punto del plan.
+        # El tope global sigue existiendo: acota el coste, no el reparto.
+        per_question = max(2, RESEARCH_MAX_TOOL_ROUNDS // max(1, len(plan)))
+
         for index, subquestion in enumerate(plan, start=1):
             if job.cancelled:
                 break
@@ -408,10 +415,12 @@ async def run_research(
 
             before = len(tracker.sources())
             force = True
-            while rounds < RESEARCH_MAX_TOOL_ROUNDS:
+            q_rounds = 0
+            while q_rounds < per_question and rounds < RESEARCH_MAX_TOOL_ROUNDS:
                 if budget_exhausted(started, RESEARCH_BUDGET_SECONDS, time.time()):
                     break
                 rounds += 1
+                q_rounds += 1
 
                 try:
                     response = await runtime.client.chat.completions.create(

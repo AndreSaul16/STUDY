@@ -108,7 +108,7 @@ test.describe("Ajustes de IA", () => {
     expect(request.headers()["x-ai-api-key"]).toBeUndefined();
   });
 
-  test("sin nada configurado la petición sale como siempre", async ({ page }) => {
+  test("sin key propia no viaja la cabecera, pero el esfuerzo sí", async ({ page }) => {
     await abrirApp(page);
     await mockChatStream(page, RESPUESTA_SIMPLE);
 
@@ -118,9 +118,16 @@ test.describe("Ajustes de IA", () => {
     const request = await peticion;
     expect(request.headers()["x-ai-api-key"]).toBeUndefined();
 
-    // Compatibilidad total: ni cabecera ni campos nuevos.
     const body = JSON.parse(request.postData() ?? "{}") as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(["conversation_id", "messages", "mode"]);
+
+    // La key nunca sale del dispositivo y el proveedor lo decide el servidor.
+    expect(body).not.toHaveProperty("provider");
+    expect(body).not.toHaveProperty("apiKey");
+
+    // Pero el esfuerzo SÍ viaja aunque se use la key del servidor. Antes se
+    // retenía, y cambiarlo en la interfaz no producía ningún efecto: se
+    // guardaba en el dispositivo y ahí moría.
+    expect(body.effort).toBeTruthy();
   });
 
   test("el guardado de la key deja explícito dónde vive", async ({ page }) => {

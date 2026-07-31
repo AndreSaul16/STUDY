@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useUIStore } from "@/store/uiStore";
 import { useChatStore } from "@/store/chatStore";
+import { useAiSettingsStore } from "@/store/aiSettingsStore";
 import { useDatabase } from "@/hooks/useDatabase";
 import { AppShell } from "@/components/templates/AppShell";
 
@@ -13,6 +14,13 @@ export default function App() {
   useEffect(() => {
     if (ready) useChatStore.getState().hydrate();
   }, [ready]);
+
+  // Los ajustes de IA NO dependen de la base: se cargan desde el arranque para
+  // que el selector de modelo y esfuerzo de la cabecera del chat tenga catálogo
+  // sin obligar a pasar antes por Ajustes.
+  useEffect(() => {
+    void useAiSettingsStore.getState().hydrate();
+  }, []);
 
   // Sincronizar clase .dark en <html> con el store
   useEffect(() => {
