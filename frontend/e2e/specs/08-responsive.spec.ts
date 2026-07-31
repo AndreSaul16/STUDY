@@ -147,4 +147,50 @@ test.describe("Responsive", () => {
 
     expect(caja!.height).toBeGreaterThanOrEqual(40);
   });
+
+  test("el placeholder del composer cabe entero en la caja", async ({ page }) => {
+    await abrirApp(page);
+
+    // La caja vacía mide lo mínimo a propósito, así que un placeholder de dos
+    // líneas se corta por abajo. En 320px se leía "Pregunta lo que" y media
+    // palabra asomando por debajo del borde.
+    const desbordado = await composer(page).evaluate(
+      (el: HTMLTextAreaElement) => el.scrollHeight > el.clientHeight + 1,
+    );
+
+    expect(desbordado).toBe(false);
+  });
+
+  test("la hoja de modelo y esfuerzo se pulsa con el dedo", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "escritorio", "Con ratón el mínimo no aplica");
+
+    await abrirApp(page);
+    await page.getByRole("button", { name: "Modelo y esfuerzo" }).click();
+
+    const hoja = page.getByRole("dialog", { name: "Modelo y esfuerzo" });
+    await expect(hoja).toBeVisible();
+
+    const botones = await hoja.getByRole("button").all();
+    expect(botones.length).toBeGreaterThan(1);
+    for (const boton of botones) {
+      const caja = await boton.boundingBox();
+      if (!caja) continue;
+      expect(caja.height, await boton.innerText()).toBeGreaterThanOrEqual(43.5);
+    }
+  });
+
+  test("el desplegable de modo por defecto no es una franja de 16px", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name === "escritorio", "Con ratón el mínimo no aplica");
+
+    await abrirApp(page);
+    await navegacion(page).getByRole("button", { name: "Más" }).click();
+
+    // La fila medía 56px pero el <select> de dentro solo 16: con el dedo era
+    // imposible acertarle.
+    const caja = await page.locator("select").first().boundingBox();
+
+    expect(caja!.height).toBeGreaterThanOrEqual(43.5);
+  });
 });

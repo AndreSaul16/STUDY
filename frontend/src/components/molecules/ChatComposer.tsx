@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/utils/cn";
-import { useIsMobile, useIsTouch } from "@/hooks/useMediaQuery";
+import { useIsDesktop, useIsMobile, useIsTouch } from "@/hooks/useMediaQuery";
 import { useReaderStore } from "@/store/readerStore";
 import { getDailyText } from "@/services/jwDailyClient";
 import { ModePicker } from "@/components/molecules/ModePicker";
@@ -8,6 +8,19 @@ import { IconClose } from "@/components/atoms/Icons";
 
 /** Contexto que se pega desde el lector. Más allá se dispara el coste y no aporta. */
 const MAX_CONTEXT_CHARS = 1500;
+
+/**
+ * El placeholder de fuera de escritorio.
+ *
+ * El campo vacío mide lo mínimo a propósito (medirlo con el placeholder lo
+ * dejaba en 100px de alto en una pantalla de 320), así que **cualquier
+ * placeholder de dos líneas se corta por abajo**: en 320px se leía "Pregunta
+ * lo que" y media palabra asomando por debajo del borde. Los `hint` de los
+ * modos son frases enteras y no caben ni de lejos; su texto completo se lee en
+ * la hoja de modos, que es donde se elige el modo, y la etiqueta del modo
+ * activo está justo encima del campo. Aquí basta con decir qué se hace.
+ */
+const PLACEHOLDER_CORTO = "Escribe tu pregunta…";
 
 interface ChatComposerProps {
   value: string;
@@ -53,6 +66,7 @@ export function ChatComposer({
   // "Táctil" y no "móvil": una tablet de 1024px también escribe con un
   // teclado en pantalla, y ahí Enter-envía manda medio mensaje.
   const isTouch = useIsMobile() || useIsTouch();
+  const isDesktop = useIsDesktop();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [attachOpen, setAttachOpen] = useState(false);
   const article = useReaderStore((s) => s.article);
@@ -98,6 +112,9 @@ export function ChatComposer({
       .slice(0, MAX_CONTEXT_CHARS);
     appendContext(article.title, body);
   };
+
+  const hint = placeholder?.trim();
+  const placeholderVisible = isDesktop && hint ? hint : PLACEHOLDER_CORTO;
 
   const useDailyText = async () => {
     try {
@@ -165,7 +182,7 @@ export function ChatComposer({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder ?? "Escribe tu pregunta…"}
+          placeholder={placeholderVisible}
           rows={1}
           enterKeyHint={isTouch ? "enter" : "send"}
           autoCapitalize="sentences"
@@ -185,7 +202,11 @@ export function ChatComposer({
             // 16px exactos: por debajo, iOS hace zoom al enfocar el campo y
             // deja la vista descuadrada al volver.
             "font-ui text-base text-reading-light sm:text-sm",
-            "placeholder:text-muted-light/60",
+            // El placeholder, un punto por debajo: a 16px no cabe en una línea
+            // en 320px y la segunda se corta. El zoom de iOS mira el
+            // `font-size` del campo, no el del placeholder, así que esto no lo
+            // despierta.
+            "placeholder:text-sm placeholder:text-muted-light/60",
             "ring-1 ring-seam-light focus:outline-none focus:ring-2 focus:ring-amber-500",
             "dark:bg-ink-50 dark:text-reading-dark dark:ring-seam-dark dark:placeholder:text-muted-dark/60 dark:focus:ring-amber-400",
           )}

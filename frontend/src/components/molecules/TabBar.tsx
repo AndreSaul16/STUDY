@@ -90,7 +90,10 @@ export function TabBar({ active, onChange, counts = {} }: TabBarProps) {
               aria-selected={isActive}
               onClick={() => onChange(tab.id)}
               className={cn(
+                // 40px con ratón; 44 con el dedo. En la franja de tablet esta
+                // barra se usa a pulgar y se quedaba por debajo del mínimo.
                 "relative shrink-0 whitespace-nowrap px-3 py-3",
+                "flex items-center pointer-coarse:min-h-[44px]",
                 "font-ui text-xs font-medium tracking-wide",
                 "transition-colors",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500",

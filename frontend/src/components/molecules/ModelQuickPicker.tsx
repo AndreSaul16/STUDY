@@ -97,6 +97,7 @@ export function ModelQuickPicker({ open, onClose }: ModelQuickPickerProps) {
                 key={m.id}
                 active={m.id === currentModel}
                 onClick={() => setModel(m.id)}
+                title={m.id}
               >
                 {m.id}
               </Chip>
@@ -146,10 +147,12 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
 function Chip({
   active,
   onClick,
+  title,
   children,
 }: {
   active: boolean;
   onClick: () => void;
+  title?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -157,14 +160,18 @@ function Chip({
       role="radio"
       aria-checked={active}
       onClick={onClick}
+      title={title}
       className={cn(
-        "flex min-h-[44px] items-center rounded-full px-3 font-ui text-xs font-medium",
+        // `max-w-full truncate`: los ids de modelo pueden ser larguísimos y en
+        // una pantalla de 320px un chip solo partía el nombre en dos líneas.
+        "flex min-h-[44px] max-w-full items-center rounded-full px-3",
+        "font-ui text-xs font-medium",
         active
           ? "bg-amber-600 text-paper-50 dark:bg-amber-700"
           : "bg-paper-200 text-muted-light hover:text-reading-light dark:bg-ink-50 dark:text-muted-dark dark:hover:text-reading-dark",
       )}
     >
-      {children}
+      <span className="truncate">{children}</span>
     </button>
   );
 }

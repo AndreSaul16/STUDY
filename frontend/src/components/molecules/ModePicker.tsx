@@ -84,7 +84,10 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
             title={mode.hint}
             onClick={() => onChange(mode.id)}
             className={cn(
-              "flex h-9 shrink-0 items-center rounded-full px-3 font-ui text-xs font-medium",
+              // 36px con ratón; 44 con el dedo. Un portátil táctil de 1440px
+              // cae en esta rama y ahí 36 se falla con el pulgar.
+              "flex h-9 shrink-0 items-center rounded-full px-3 pointer-coarse:h-11",
+              "font-ui text-xs font-medium",
               "transition-colors duration-200 ease-[var(--ease-out-expo)]",
               mode.id === value
                 ? "bg-amber-600 text-paper-50 dark:bg-amber-700"

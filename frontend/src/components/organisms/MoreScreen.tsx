@@ -182,10 +182,12 @@ function Settings() {
             Modo del chat por defecto
           </span>
           <span className="relative flex min-w-0 shrink-0 items-center gap-1">
+            {/* `min-h-[44px]`: el desplegable medía 16px de alto y con el
+                dedo era imposible acertarle, aunque la fila entera midiera 56. */}
             <select
               value={mode}
               onChange={(e) => setMode(e.target.value)}
-              className="max-w-[9.5rem] appearance-none truncate bg-transparent pr-5 text-right font-ui text-xs text-muted-light outline-none dark:text-muted-dark"
+              className="max-w-[9.5rem] min-h-[44px] appearance-none truncate bg-transparent pr-5 text-right font-ui text-xs text-muted-light outline-none dark:text-muted-dark"
             >
               {modes.map((m) => (
                 <option key={m.id} value={m.id}>

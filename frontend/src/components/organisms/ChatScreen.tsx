@@ -154,18 +154,23 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
           {/* Acceso rápido al modelo y al esfuerzo. NO va dentro del
               ModePicker: ese responde a "qué quiero escribir" y es la pieza
               más delicada del responsive. */}
+          {/* Por debajo de `sm` se queda solo con el modelo: con el esfuerzo
+              también, este botón se comía 120 de los 320px de la cabecera y el
+              título de la conversación se quedaba en «Dame u…». */}
           <button
             onClick={() => setModelPickerOpen(true)}
             aria-label="Modelo y esfuerzo"
             aria-haspopup="dialog"
-            className="flex h-11 max-w-[7.5rem] shrink-0 items-center truncate rounded-full px-2 font-ui text-[11px] text-muted-light short:h-10 dark:text-muted-dark"
+            className="flex h-11 max-w-[5.5rem] shrink-0 items-center rounded-full px-2 font-ui text-[11px] text-muted-light short:h-10 sm:max-w-[7.5rem] dark:text-muted-dark"
           >
-            {[
-              shortModelLabel(
+            <span className="truncate">
+              {shortModelLabel(
                 aiSettings.byProvider[aiSettings.provider]?.model ?? "",
-              ) || "Modelo",
-              aiSettings.effort,
-            ].join(" · ")}
+              ) || "Modelo"}
+            </span>
+            <span className="hidden whitespace-nowrap sm:inline">
+              {` · ${aiSettings.effort}`}
+            </span>
           </button>
 
           {messages.length > 0 && (
@@ -326,6 +331,20 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
  * colgado. Como cada evento va numerado y el último visto se guarda en
  * `localStorage`, reengancharse cuesta un botón y no repite lo ya leído.
  */
+/**
+ * Corta por la última palabra entera y deja constancia con puntos suspensivos.
+ *
+ * Un `slice` a pelo partía la pregunta a media palabra —«…y en los ejempl»— y
+ * en una pantalla de 320px eso parece un error de la app, no un recorte.
+ */
+function recorta(texto: string, max: number): string {
+  const limpio = texto.replace(/\s+/g, " ").trim();
+  if (limpio.length <= max) return limpio;
+  const cortado = limpio.slice(0, max);
+  const espacio = cortado.lastIndexOf(" ");
+  return `${(espacio > max * 0.6 ? cortado.slice(0, espacio) : cortado).trimEnd()}…`;
+}
+
 function ResumeResearchBanner() {
   const resumable = useResearchStore((s) => s.resumable);
   const active = useResearchStore((s) => s.jobId !== null);
@@ -337,7 +356,7 @@ function ResumeResearchBanner() {
     <div className="mb-3 max-w-[68ch] rounded-xl border border-amber-600/40 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-900/10">
       <p className="font-ui text-xs text-reading-light dark:text-reading-dark">
         Tienes una investigación a medias
-        {resumable.question ? `: «${resumable.question.slice(0, 60)}»` : ""}.
+        {resumable.question ? `: «${recorta(resumable.question, 60)}»` : ""}.
       </p>
       <div className="-ml-2 mt-1 flex flex-wrap items-center gap-1">
         <button
