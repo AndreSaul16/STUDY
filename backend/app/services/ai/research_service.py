@@ -361,6 +361,16 @@ async def run_research(
 
         # ── 1. PLAN ──────────────────────────────────────────────
         plan = await _plan_subquestions(runtime, job.question, full_messages)
+
+        # El plan se recorta a lo que el presupuesto puede investigar de verdad,
+        # a razón de un mínimo de 2 rondas por sub-pregunta. Prometer seis
+        # puntos y dejar los dos últimos sin una sola consulta es peor que
+        # prometer cuatro y cumplirlos: el usuario lee el plan y espera que se
+        # cubra entero.
+        cabe = max(1, RESEARCH_MAX_TOOL_ROUNDS // 2)
+        if len(plan) > cabe:
+            plan = plan[:cabe]
+
         job.plan = plan
         job.append(
             "plan",
