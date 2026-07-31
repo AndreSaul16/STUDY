@@ -87,16 +87,36 @@ class TestListModes:
 
 class TestPlantillaDelComentario:
     def test_fija_la_longitud_del_comentario(self):
-        assert "60 A 80 PALABRAS" in CHAT_MODES["comentario"].prompt
+        assert "60 a 80 palabras" in CHAT_MODES["comentario"].prompt
 
-    def test_fija_la_seccion_de_por_que_funciona(self):
-        prompt = CHAT_MODES["comentario"].prompt
-
-        assert "Por qué funciona" in prompt
-        assert "EXACTAMENTE tres viñetas" in prompt
+    def test_exige_la_cita_de_bloque_que_el_usuario_copia(self):
+        # Contrato con la interfaz: el botón "Copiar comentario" del frontend
+        # busca el blockquote. Sin él, el atajo estrella deja de funcionar.
+        assert "cita de bloque" in CHAT_MODES["comentario"].prompt
 
     def test_exige_la_expresion_biblica_entrecomillada(self):
-        assert "EXPRESIÓN BÍBLICA TEXTUAL ENTRECOMILLADA" in CHAT_MODES["comentario"].prompt
+        assert "expresión más fuerte del pasaje" in CHAT_MODES["comentario"].prompt
+
+    # ─── Nada de formulario ──────────────────────────────────────
+    # La plantilla original imponía apertura calcada, línea de anuncio literal y
+    # exactamente tres viñetas de un menú cerrado. Salía siempre la misma
+    # respuesta con distinto relleno.
+
+    @pytest.mark.parametrize(
+        "resto_de_formulario",
+        [
+            "Por qué funciona",
+            "EXACTAMENTE tres viñetas",
+            "Toca las emociones",
+            "Aquí tienes una propuesta",
+            "exactamente esta estructura",
+        ],
+    )
+    def test_no_impone_un_esqueleto_fijo(self, resto_de_formulario):
+        assert resto_de_formulario.lower() not in CHAT_MODES["comentario"].prompt.lower()
+
+    def test_pide_variedad_entre_respuestas(self):
+        assert "no deberían sonar iguales" in CHAT_MODES["comentario"].prompt
 
 
 class TestSystemPrompt:
@@ -105,7 +125,7 @@ class TestSystemPrompt:
 
         prompt = build_system_prompt(get_mode("comentario"))
 
-        assert "60 A 80 PALABRAS" in prompt
+        assert "60 a 80 palabras" in prompt
         assert "MODO: DISCURSO" not in prompt
 
     @pytest.mark.parametrize("mode_id", sorted(CHAT_MODES))
@@ -116,7 +136,7 @@ class TestSystemPrompt:
         prompt = build_system_prompt(get_mode(mode_id))
 
         assert VOICE_GUIDE in prompt
-        assert "NADA de emojis" in prompt
+        assert "emojis" in prompt.lower()
 
     @pytest.mark.parametrize("mode_id", sorted(CHAT_MODES))
     def test_todos_los_modos_llevan_la_politica_de_investigacion(self, mode_id):

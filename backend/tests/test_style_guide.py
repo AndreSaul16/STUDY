@@ -51,27 +51,60 @@ class TestVoiceGuide:
     @pytest.mark.parametrize(
         "marcador",
         [
-            "caso legal",
-            "fuego ardiente",
-            "reparadores de brechas",
-            "Preparó su corazón",
             "ustedes",
-            "Nunca \"vosotros\"",
-            "NADA de emojis",
-            "no tirar la toalla",
+            "emojis",
             "Jehová",
-            "el Salón del Reino",
+            "Salón del Reino",
         ],
     )
-    def test_conserva_los_rasgos_extraidos_de_sus_textos(self, marcador):
+    def test_conserva_los_rasgos_de_su_entorno(self, marcador):
         assert marcador.lower() in VOICE_GUIDE.lower()
 
     def test_prohibe_el_lenguaje_de_coach(self):
         assert "empoderar" in VOICE_GUIDE
-        assert "mindset" in VOICE_GUIDE
+        assert "clave del éxito" in VOICE_GUIDE
 
     def test_exige_entrecomillar_la_expresion_biblica(self):
-        assert "entre comillas la expresión textual" in VOICE_GUIDE
+        assert "entre comillas" in VOICE_GUIDE
+
+    # ─── Lo que de verdad hay que proteger ───────────────────────
+    # La primera versión de esta guía listaba los giros literales del usuario
+    # ("caso legal", "no tirar la toalla", "¡qué gran lección!") y el modelo los
+    # repetía en cada turno: dejaban de ser su voz y sonaban a muletilla. Estos
+    # tests impiden que eso vuelva.
+
+    @pytest.mark.parametrize(
+        "muletilla",
+        [
+            "caso legal",
+            "fuego ardiente",
+            "temible guerrero",
+            "no tirar la toalla",
+            "qué gran lección",
+            "pincho USB",
+            "estar de bajón",
+            "parejita",
+        ],
+    )
+    def test_no_ofrece_frases_suyas_para_copiar(self, muletilla):
+        assert muletilla.lower() not in VOICE_GUIDE.lower(), (
+            f"«{muletilla}» es un giro concreto del usuario. En el prompt se "
+            "convierte en muletilla: descríbase el instinto, no la frase."
+        )
+
+    def test_prohibe_explicitamente_copiar_expresiones(self):
+        texto = VOICE_GUIDE.lower()
+
+        assert "no copies expresiones" in texto
+
+    def test_prohibe_presentar_lo_que_entrega(self):
+        # "Aquí tienes una propuesta de unas 75 palabras…" era literal en el
+        # prompt viejo y salía en todas las respuestas.
+        assert "aquí tienes una propuesta" in VOICE_GUIDE.lower()
+        assert "nada de" in VOICE_GUIDE.lower()
+
+    def test_pide_hablar_como_una_persona_normal(self):
+        assert "como una persona normal" in VOICE_GUIDE.lower()
 
 
 class TestPoliticaDeInvestigacion:
