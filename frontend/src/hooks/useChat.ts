@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 import { parseSSEEvent, splitSSEEvents } from "@/utils/sse";
 
 import {
   buildRequestMessages,
   CHAT_STREAM_ENDPOINT,
 } from "@/services/chatClient";
-import { followJob } from "@/services/researchClient";
+import { cancelJob, fetchSnapshot, followJob } from "@/services/researchClient";
 import { aiRequestBody, aiRequestHeaders } from "@/store/aiSettingsStore";
 import { useChatStore } from "@/store/chatStore";
 import { useResearchStore } from "@/store/researchStore";
@@ -87,6 +87,58 @@ function parseStringList(raw: unknown): string[] {
 }
 
 /**
+ * El `detail` que manda FastAPI, o el estado HTTP si no viene ninguno.
+ *
+ * Sin esto el usuario leía "HTTP 503: Service Unavailable" donde el backend
+ * había escrito "Configura tu API key en Más → Ajustes de IA para usar el
+ * chat": un mensaje accionable cambiado por uno que no dice nada.
+ */
+async function errorDetail(response: Response): Promise<string> {
+  try {
+    const payload: unknown = await response.json();
+    const value = (payload as Record<string, unknown> | null)?.detail;
+    if (typeof value === "string" && value.trim()) return value;
+  } catch {
+    // Cuerpo vacío o que no es JSON: nos quedamos con el estado.
+  }
+  return `HTTP ${response.status}: ${response.statusText}`;
+}
+
+// ─── El turno en curso ───────────────────────────────────────────
+
+/**
+ * El turno activo, a nivel de MÓDULO y no por instancia del hook.
+ *
+ * `ChatScreen` puede estar montado dos veces a la vez: en el split de
+ * escritorio, la pantalla principal y la pestaña "Chat" del panel de
+ * investigación son la misma pantalla. Con un `useRef` por instancia, el botón
+ * de detener de una no sabía nada del stream que había abierto la otra, y el
+ * turno seguía corriendo. El estado del turno vive en el store, que es único:
+ * su cancelación tiene que serlo también.
+ */
+interface ActiveTurn {
+  controller: AbortController;
+  /** Investigación profunda: hay que cancelarla también en el servidor. */
+  jobId: string | null;
+  /** Dónde se guarda la respuesta, pase lo que pase con la vista. */
+  conversationId: string;
+}
+
+let activeTurn: ActiveTurn | null = null;
+
+/** Corta el turno en curso, en el cliente y —si es profundo— en el servidor. */
+function stopActiveTurn(): void {
+  const turn = activeTurn;
+  if (!turn) return;
+  activeTurn = null;
+  turn.controller.abort();
+  // El trabajo profundo vive en el backend: cerrar el SSE no lo para. Sin esta
+  // llamada, "Detener" dejaba al servidor quemando hasta cinco minutos de
+  // llamadas al modelo por una respuesta que ya nadie iba a leer.
+  if (turn.jobId) void cancelJob(turn.jobId);
+}
+
+/**
  * Sigue una investigación profunda hasta el final.
  *
  * El turno de chat ya se cerró: el backend respondió con un `event: job` y
@@ -96,36 +148,54 @@ function parseStringList(raw: unknown): string[] {
  * Cuando llega el `done`, el informe se guarda como un mensaje normal del
  * asistente: así hereda copiar, compartir, exportar y los chips de fuentes sin
  * una sola línea de código nueva.
+ *
+ * Se reengancha SIEMPRE desde el evento 1, también al reanudar: el texto del
+ * informe no se guarda en ninguna parte hasta que termina, así que pedirle al
+ * backend solo "lo que falta" archivaba un informe sin su principio. Repetir
+ * los eventos no cuesta nada —están en la memoria del servidor— y reconstruye
+ * el plan, las fuentes, los metadatos y el texto enteros.
  */
 export async function trackResearchJob(
   jobId: string,
   conversationId: string,
   question: string,
   estimatedSeconds: number,
-  startFromEventId = 0,
 ): Promise<void> {
-  const research = useResearchStore.getState();
-  if (startFromEventId === 0) {
-    research.start(jobId, conversationId, question, estimatedSeconds);
-  }
+  // Antes solo se llamaba al arrancar de cero. Al reanudar, `jobId` se quedaba
+  // en null: no se pintaba la barra de progreso y el banner de "Reanudar"
+  // seguía en pantalla, invitando a duplicar el seguimiento.
+  useResearchStore
+    .getState()
+    .start(jobId, conversationId, question, estimatedSeconds);
+
+  const controller = new AbortController();
+  activeTurn = { controller, jobId, conversationId };
 
   let answer = "";
   let meta: ChatMessageMeta | undefined;
   let sources: ChatSource[] = [];
   let docs = 0;
 
+  /** Cierra el turno dejando constancia de por qué. */
+  const fail = (message: string): void => {
+    useResearchStore.getState().setError(message);
+    // También en el chatStore: el banner de error de `ChatScreen` es lo único
+    // que sigue en pantalla después de que la barra de progreso desaparezca.
+    useChatStore.getState().setError(message);
+    useChatStore.getState().abortTurn(answer, conversationId);
+    useResearchStore.getState().finish();
+  };
+
   await followJob({
     jobId,
-    lastEventId: startFromEventId,
+    signal: controller.signal,
     onGone: () => {
-      useResearchStore.getState().setError(
-        "Esa investigación ya no está en el servidor. Puedes volver a lanzarla.",
-      );
-      useResearchStore.getState().finish();
-      useChatStore.getState().abortTurn(answer);
+      fail("Esa investigación ya no está en el servidor. Puedes volver a lanzarla.");
     },
     onError: (message) => {
-      useResearchStore.getState().setError(message);
+      // Antes esto solo escribía en el researchStore: `isStreaming` se quedaba
+      // en true para siempre y el composer no volvía nunca.
+      fail(message);
     },
     onEvent: (event) => {
       const store = useResearchStore.getState();
@@ -158,6 +228,9 @@ export async function trackResearchJob(
         case "sources":
           sources = parseSources(event.data.items);
           useChatStore.getState().setPendingSources(sources);
+          // El backend emite las fuentes justo al terminar el plan: a partir
+          // de aquí ya solo queda redactar.
+          store.setWriting();
           break;
         case "token":
           answer += String(event.data.text ?? "");
@@ -170,13 +243,26 @@ export async function trackResearchJob(
           docs = Number(event.data.docs) || docs;
           meta = { ...(meta ?? {}), deep: true, docs };
           break;
-        case "error":
-          store.setError(String(event.data.message ?? "La investigación falló."));
+        case "error": {
+          const message = String(event.data.message ?? "La investigación falló.");
+          store.setError(message);
+          // El `done` llega justo detrás y hace desaparecer la barra de
+          // progreso: sin dejarlo también aquí, el usuario no vería nada.
+          useChatStore.getState().setError(message);
           break;
+        }
         case "done":
+          // Con el `conversationId` explícito: la investigación tarda minutos
+          // y el informe tiene que volver a SU conversación, no a la que esté
+          // abierta cuando termine.
           useChatStore
             .getState()
-            .finishTurn(answer, [], { ...(meta ?? {}), deep: true, docs });
+            .finishTurn(
+              answer,
+              [],
+              { ...(meta ?? {}), deep: true, docs },
+              conversationId,
+            );
           store.finish();
           break;
         default:
@@ -184,6 +270,42 @@ export async function trackResearchJob(
       }
     },
   });
+
+  if (activeTurn?.controller === controller) activeTurn = null;
+
+  // Cancelado por el usuario: `followJob` vuelve en silencio y hay que cerrar
+  // el turno a mano, o el composer se queda bloqueado.
+  if (controller.signal.aborted && useChatStore.getState().isStreaming) {
+    useChatStore.getState().abortTurn(answer, conversationId);
+    useResearchStore.getState().finish();
+  }
+}
+
+/**
+ * Reengancha una investigación que quedó a medias (banner de "Reanudar").
+ *
+ * Pregunta primero por la instantánea: si el trabajo ya no está en el servidor
+ * —un redeploy se lleva por delante los que estén vivos— se dice y se descarta,
+ * en vez de abrir un SSE que solo va a devolver un 404.
+ */
+export async function resumeResearchJob(
+  jobId: string,
+  conversationId: string,
+  question: string,
+): Promise<void> {
+  const snapshot = await fetchSnapshot(jobId);
+  if (!snapshot) {
+    useResearchStore.getState().dismissResumable();
+    useChatStore
+      .getState()
+      .setError(
+        "Esa investigación ya no está en el servidor. Puedes volver a lanzarla.",
+      );
+    useChatStore.getState().abortTurn("");
+    return;
+  }
+
+  await trackResearchJob(jobId, conversationId, snapshot.question || question, 240);
 }
 
 /** Metadatos del evento `metadata`. Todo opcional: el backend puede ser viejo. */
@@ -214,17 +336,13 @@ export function useChat(): UseChatReturn {
   const activity = useChatStore((s) => s.activity);
   const error = useChatStore((s) => s.error);
 
-  const abortRef = useRef<AbortController | null>(null);
-  const mountedRef = useRef(true);
-
-  // Abortar el stream y bloquear setState al desmontar.
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      abortRef.current?.abort();
-    };
-  }, []);
+  // Sin abortar nada al desmontar, a propósito. El turno no es de esta
+  // instancia: el estado vive en el store y la respuesta se persiste en
+  // SQLite. Antes se abortaba, y como el guardia de "componente montado"
+  // impedía cerrar el turno, cambiar de pestaña a mitad de una respuesta
+  // dejaba `isStreaming` en true para siempre: al volver, el composer estaba
+  // bloqueado y la única salida era recargar. Ahora la respuesta sigue,
+  // termina y está ahí al volver.
 
   /**
    * Abre el stream con el historial que ya hay en el store.
@@ -237,7 +355,7 @@ export function useChat(): UseChatReturn {
     const mode = useChatStore.getState().mode;
 
     const controller = new AbortController();
-    abortRef.current = controller;
+    activeTurn = { controller, jobId: null, conversationId };
 
     let fullContent = "";
     let suggestions: string[] = [];
@@ -265,7 +383,7 @@ export function useChat(): UseChatReturn {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        throw new Error(await errorDetail(response));
       }
 
       if (!response.body) {
@@ -295,7 +413,7 @@ export function useChat(): UseChatReturn {
           switch (parsed.event) {
             case "tool_call": {
               const name = String(parsed.data.name ?? "");
-              if (!mountedRef.current || !name) break;
+              if (!name) break;
               chat.pushActivity({
                 name,
                 detail: describeArgs(parsed.data.arguments),
@@ -304,14 +422,12 @@ export function useChat(): UseChatReturn {
             }
             case "tool_result": {
               const name = String(parsed.data.name ?? "");
-              if (!mountedRef.current || !name) break;
+              if (!name) break;
               chat.completeActivity(name, String(parsed.data.summary ?? ""));
               break;
             }
             case "sources":
-              if (mountedRef.current) {
-                chat.setPendingSources(parseSources(parsed.data.items));
-              }
+              chat.setPendingSources(parseSources(parsed.data.items));
               break;
             case "suggestions":
               suggestions = parseStringList(parsed.data.items);
@@ -325,12 +441,10 @@ export function useChat(): UseChatReturn {
               break;
             case "token":
               fullContent += String(parsed.data.text ?? "");
-              if (mountedRef.current) chat.appendToken(fullContent);
+              chat.appendToken(fullContent);
               break;
             case "error":
-              if (mountedRef.current) {
-                chat.setError(String(parsed.data.message ?? "Unknown error"));
-              }
+              chat.setError(String(parsed.data.message ?? "Unknown error"));
               break;
             case "job": {
               // Modo profundo: el backend no responde con tokens sino con el
@@ -370,25 +484,23 @@ export function useChat(): UseChatReturn {
         return;
       }
 
-      if (mountedRef.current) {
-        useChatStore.getState().finishTurn(fullContent, suggestions, meta);
-      }
+      useChatStore
+        .getState()
+        .finishTurn(fullContent, suggestions, meta, conversationId);
     } catch (err) {
       if (controller.signal.aborted) {
         // Cancelado por el usuario — el parcial se guarda igualmente.
-        if (mountedRef.current) {
-          useChatStore.getState().abortTurn(fullContent);
-        }
-      } else if (mountedRef.current) {
+        useChatStore.getState().abortTurn(fullContent, conversationId);
+      } else {
         const message = err instanceof Error ? err.message : "Unknown error";
         const chat = useChatStore.getState();
         chat.setError(message);
-        chat.abortTurn(fullContent);
+        chat.abortTurn(fullContent, conversationId);
       }
     } finally {
-      if (abortRef.current === controller) {
-        abortRef.current = null;
-      }
+      // Solo si sigue siendo el nuestro: en modo profundo, `trackResearchJob`
+      // ya lo ha sustituido por el suyo antes de llegar aquí.
+      if (activeTurn?.controller === controller) activeTurn = null;
     }
   }, []);
 
@@ -407,8 +519,26 @@ export function useChat(): UseChatReturn {
     [runTurn],
   );
 
+  /**
+   * "Detener".
+   *
+   * En modo normal basta con abortar el `fetch`. En investigación profunda no:
+   * el turno de chat ya se cerró y lo que sigue corriendo es un trabajo en el
+   * servidor, que hay que cancelar allí. `stopActiveTurn` hace las dos cosas;
+   * el cierre del turno lo remata `trackResearchJob` al volver de `followJob`.
+   */
   const cancel = useCallback(() => {
-    abortRef.current?.abort();
+    const turn = activeTurn;
+    stopActiveTurn();
+    if (!turn?.jobId) return;
+    // El seguimiento profundo puede tardar un instante en enterarse y el
+    // composer tiene que volver ya. Con el id de SU conversación: el informe
+    // parcial no puede acabar en la que esté abierta.
+    const chat = useChatStore.getState();
+    if (chat.isStreaming) {
+      chat.abortTurn(chat.streamingContent, turn.conversationId);
+    }
+    useResearchStore.getState().finish();
   }, []);
 
   const newConversation = useCallback(() => {

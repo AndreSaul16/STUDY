@@ -58,11 +58,14 @@ export async function followJob({
         throw new Error(`HTTP ${response.status}`);
       }
 
-      attempts = 0;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       let finished = false;
+      // El contador se pone a cero cuando llega ALGO, no con el 200. Si se
+      // reseteara con la respuesta, una conexión que abre y cierra en vacío lo
+      // dejaría siempre en 1 y el tope de reintentos nunca se alcanzaría.
+      let received = 0;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -76,13 +79,27 @@ export async function followJob({
           const parsed = parseSSEEvent(raw);
           if (!parsed) continue;
           if (typeof parsed.id === "number") cursor = parsed.id;
+          received += 1;
           onEvent(parsed);
           if (parsed.event === "done") finished = true;
         }
       }
 
+      if (received > 0) attempts = 0;
+
       if (finished || signal?.aborted) return;
-      // El servidor cerró sin `done`: se reconecta desde donde estábamos.
+
+      // El servidor cerró sin `done`. Cuenta como intento igual que un error
+      // de red: `stream_job` cierra limpiamente cuando el trabajo ya terminó y
+      // el cursor está al día, así que sin frenar aquí el cliente reconecta en
+      // bucle cerrado —sin espera y sin tope— contra un trabajo que jamás va a
+      // emitir nada más.
+      attempts += 1;
+      if (attempts > MAX_RECONNECTS) {
+        onError("La investigación dejó de enviar datos.");
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RECONNECT_DELAY_MS));
     } catch (error) {
       if (signal?.aborted) return;
       attempts += 1;

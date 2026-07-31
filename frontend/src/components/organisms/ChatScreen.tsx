@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/utils/cn";
-import { useChat, TOOL_LABELS, trackResearchJob } from "@/hooks/useChat";
+import { useChat, TOOL_LABELS, resumeResearchJob } from "@/hooks/useChat";
 import { useChatStore } from "@/store/chatStore";
 import { useStickToBottom } from "@/hooks/useStickToBottom";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
@@ -343,12 +343,10 @@ function ResumeResearchBanner() {
         <button
           onClick={() => {
             useChatStore.getState().resumeTurn();
-            void trackResearchJob(
+            void resumeResearchJob(
               resumable.jobId,
               resumable.conversationId ?? conversationId ?? "",
               resumable.question,
-              240,
-              resumable.lastEventId,
             );
           }}
           className="inline-flex min-h-[44px] items-center rounded-full px-3 font-ui text-xs font-medium text-amber-800 dark:text-amber-300"

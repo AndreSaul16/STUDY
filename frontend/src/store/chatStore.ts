@@ -83,13 +83,20 @@ interface ChatState {
   completeActivity: (name: string, summary: string) => void;
   appendToken: (text: string) => void;
   setPendingSources: (sources: ChatSource[]) => void;
+  /**
+   * Cierra el turno y guarda la respuesta.
+   *
+   * `targetConversationId` existe por la investigación profunda: tarda minutos
+   * y el usuario puede abrir otra conversación mientras tanto. Sin él, el
+   * informe se guardaba en la que estuviera abierta al terminar.
+   */
   finishTurn: (
     content: string,
     suggestions: string[],
     meta?: ChatMessageMeta,
+    targetConversationId?: string,
   ) => void;
-  abortTurn: (partial: string) => void;
-  setSuggestionsForLast: (suggestions: string[]) => void;
+  abortTurn: (partial: string, targetConversationId?: string) => void;
 }
 
 /** Mensaje de UI a partir de una fila de SQLite. */
@@ -129,7 +136,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // Las conversaciones que se abrieron y nunca se usaron solo ensucian.
       pruneEmptyConversations();
       const conversations = listConversations();
-      const last = conversations[0] ?? null;
+      // La MÁS RECIENTE, no la primera de la lista: `listConversations` ordena
+      // por fijadas primero, así que fijar una conversación vieja hacía que la
+      // app abriera esa al arrancar en vez de la que se estaba usando.
+      const last =
+        conversations.reduce<ConversationRow | null>(
+          (best, c) => (best === null || c.updatedAt > best.updatedAt ? c : best),
+          null,
+        ) ?? null;
 
       set({
         conversations,
@@ -165,6 +179,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       conversationId,
       messages: [],
       mode: nextMode,
+      // Red de seguridad: si el turno anterior se quedó colgado (un fallo de
+      // red que nadie cerró), abrir una conversación nueva tiene que devolver
+      // el composer. Sin esto la única salida era recargar la página.
+      isStreaming: false,
       streamingContent: "",
       activity: [],
       pendingSources: [],
@@ -192,6 +210,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         meta: row.meta,
         createdAt: row.createdAt * 1000,
       })),
+      // Igual que en `newConversation`: cambiar de conversación devuelve el
+      // composer aunque el turno anterior se quedara a medias.
+      isStreaming: false,
       streamingContent: "",
       activity: [],
       pendingSources: [],
@@ -318,9 +339,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   setPendingSources: (pendingSources) => set({ pendingSources }),
 
-  finishTurn: (content, suggestions, meta) => {
+  finishTurn: (content, suggestions, meta, targetConversationId) => {
     const { conversationId, mode, activity, pendingSources } = get();
-    if (!conversationId || !content) {
+    const target = targetConversationId ?? conversationId;
+    if (!target || !content) {
       set({ isStreaming: false, streamingContent: "", activity: [] });
       return;
     }
@@ -335,7 +357,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     appendMessage({
       messageId: message.id,
-      conversationId,
+      conversationId: target,
       role: "assistant",
       content,
       mode,
@@ -345,8 +367,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       meta,
     });
 
+    // Si mientras tanto se cambió de conversación, el mensaje se guarda en la
+    // suya pero NO se pinta aquí: aparecería en la conversación equivocada.
+    const visible = target === conversationId;
+
     set({
-      messages: [...get().messages, message],
+      ...(visible ? { messages: [...get().messages, message] } : {}),
       isStreaming: false,
       streamingContent: "",
       activity: [],
@@ -355,22 +381,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     });
   },
 
-  abortTurn: (partial) => {
+  abortTurn: (partial, targetConversationId) => {
     // El parcial también se persiste: es trabajo del usuario, no basura.
     if (partial) {
-      get().finishTurn(`${partial} [cancelado]`, []);
+      get().finishTurn(`${partial} [cancelado]`, [], undefined, targetConversationId);
       return;
     }
     set({ isStreaming: false, streamingContent: "", activity: [] });
   },
-
-  setSuggestionsForLast: (suggestions) =>
-    set((s) => {
-      if (s.messages.length === 0) return {};
-      const next = [...s.messages];
-      const last = next[next.length - 1];
-      if (!last || last.role !== "assistant") return {};
-      next[next.length - 1] = { ...last, suggestions };
-      return { messages: next };
-    }),
 }));

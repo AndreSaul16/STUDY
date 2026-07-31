@@ -1,11 +1,18 @@
 /**
  * researchStore — la investigación profunda en curso.
  *
- * El estado clave es `lastEventId`, y se persiste en `localStorage`: los
- * trabajos viven en la memoria del backend y un redeploy de Railway los mata.
- * Con el id del último evento visto, reconectar reemite solo lo que falta, y si
- * el trabajo ya no existe (404) la app puede ofrecer relanzarlo sin haber
- * perdido lo que se leyó.
+ * Lo que se persiste en `localStorage` es la IDENTIDAD del trabajo (su id, la
+ * pregunta y el plan): los trabajos viven en la memoria del backend y cerrar la
+ * app —o un redeploy de Railway— deja el seguimiento colgado. Con eso guardado
+ * la app ofrece "Reanudar", y si el trabajo ya no existe (404) ofrece
+ * relanzarlo.
+ *
+ * **El `lastEventId` NO se persiste.** Se intentó, para que reanudar reemitiera
+ * solo lo que faltaba, pero el texto del informe no se guarda en ninguna parte:
+ * reengancharse a mitad devolvía únicamente la cola y el informe se archivaba
+ * truncado. El backend conserva todos los eventos del trabajo, así que reanudar
+ * los repite desde el principio —memoria local, ni una llamada al modelo— y el
+ * informe se reconstruye entero. Aquí queda solo como progreso en memoria.
  *
  * Sin el middleware `persist` por el mismo motivo que en `chatStore`: en Safari
  * privado `localStorage` lanza al escribir, y eso no puede dejar la app en
@@ -24,7 +31,6 @@ export interface ResearchPlanItem {
 interface StoredJob {
   jobId: string;
   conversationId: string | null;
-  lastEventId: number;
   plan: ResearchPlanItem[];
   question: string;
 }
@@ -42,7 +48,6 @@ function readStored(): StoredJob | null {
       jobId: s.jobId,
       conversationId:
         typeof s.conversationId === "string" ? s.conversationId : null,
-      lastEventId: typeof s.lastEventId === "number" ? s.lastEventId : 0,
       plan: Array.isArray(s.plan) ? (s.plan as ResearchPlanItem[]) : [],
       question: typeof s.question === "string" ? s.question : "",
     };
@@ -74,6 +79,14 @@ interface ResearchState {
   lastEventId: number;
   estimatedSeconds: number;
   error: string | null;
+  /**
+   * Ya no queda plan que investigar: el backend está redactando el informe.
+   *
+   * Es la fase más larga y el `step` no vuelve a moverse en toda ella, así que
+   * sin esto el último punto del plan se queda con la flecha de "en curso"
+   * hasta el final y parece que la investigación se ha atascado.
+   */
+  writing: boolean;
   /** Trabajo guardado que no está siendo seguido: banner de "Reanudar". */
   resumable: StoredJob | null;
 
@@ -84,6 +97,7 @@ interface ResearchState {
     estimatedSeconds: number,
   ) => void;
   setPlan: (plan: ResearchPlanItem[]) => void;
+  setWriting: () => void;
   setProgress: (progress: {
     step: number;
     total: number;
@@ -111,10 +125,11 @@ export const useResearchStore = create<ResearchState>()((set, get) => ({
   lastEventId: 0,
   estimatedSeconds: 240,
   error: null,
+  writing: false,
   resumable: null,
 
   start: (jobId, conversationId, question, estimatedSeconds) => {
-    writeStored({ jobId, conversationId, lastEventId: 0, plan: [], question });
+    writeStored({ jobId, conversationId, plan: [], question });
     set({
       jobId,
       conversationId,
@@ -128,17 +143,20 @@ export const useResearchStore = create<ResearchState>()((set, get) => ({
       elapsedMs: 0,
       lastEventId: 0,
       error: null,
+      writing: false,
       resumable: null,
     });
   },
 
   setPlan: (plan) => {
-    const { jobId, conversationId, lastEventId, question } = get();
+    const { jobId, conversationId, question } = get();
     if (jobId) {
-      writeStored({ jobId, conversationId, lastEventId, plan, question });
+      writeStored({ jobId, conversationId, plan, question });
     }
     set({ plan, total: plan.length });
   },
+
+  setWriting: () => set({ writing: true, label: "Redactando el informe" }),
 
   setProgress: ({ step, total, label, docs, elapsedMs }) =>
     set((s) => ({
@@ -149,18 +167,16 @@ export const useResearchStore = create<ResearchState>()((set, get) => ({
       elapsedMs,
     })),
 
-  setLastEventId: (lastEventId) => {
-    const { jobId, conversationId, plan, question } = get();
-    if (jobId) {
-      writeStored({ jobId, conversationId, lastEventId, plan, question });
-    }
-    set({ lastEventId });
-  },
+  setLastEventId: (lastEventId) => set({ lastEventId }),
 
   setError: (error) => set({ error }),
 
   finish: () => {
     writeStored(null);
+    // `error` NO se limpia: el backend emite `error` y acto seguido `done`, así
+    // que limpiarlo aquí borraba el motivo del fallo un instante después de
+    // haberlo escrito y el usuario veía desaparecer la barra de progreso sin
+    // una sola palabra. Lo limpia `start()` al lanzar la siguiente.
     set({
       jobId: null,
       plan: [],
@@ -170,7 +186,7 @@ export const useResearchStore = create<ResearchState>()((set, get) => ({
       docs: 0,
       elapsedMs: 0,
       lastEventId: 0,
-      error: null,
+      writing: false,
       resumable: null,
     });
   },

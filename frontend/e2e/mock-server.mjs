@@ -32,6 +32,10 @@ const CORS = {
 const sse = (event, data) =>
   `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
+/** Igual, pero numerado: la investigación profunda los usa para reanudar. */
+const sseId = (id, event, data) =>
+  `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+
 /**
  * Escenarios. Cada uno es una lista de `[retardo_ms, trozo]`.
  *
@@ -53,6 +57,34 @@ const SCENARIOS = {
   parcial: [
     [100, sse("token", { text: "Empiezo a redactar y" })],
     [60_000, sse("done", { total_tokens: 0, elapsed_ms: 60000 })],
+  ],
+
+  // El stream de una investigación profunda: plan, progreso y algo de texto,
+  // y el stream se queda abierto. Es el rato —minutos— en el que "Detener"
+  // tiene que cancelar el trabajo en el servidor de verdad.
+  investigacion: [
+    [
+      100,
+      sseId(1, "plan", {
+        items: [
+          { id: 1, question: "Qué dice la Biblia sobre el aguante" },
+          { id: 2, question: "Qué dicen las publicaciones" },
+        ],
+        budget_seconds: 150,
+      }),
+    ],
+    [
+      100,
+      sseId(2, "progress", {
+        step: 1,
+        total: 2,
+        label: "Qué dice la Biblia sobre el aguante",
+        docs: 1,
+        elapsed_ms: 1200,
+      }),
+    ],
+    [100, sseId(3, "token", { text: "Voy redactando el informe y" })],
+    [60_000, sseId(4, "done", { total_tokens: 0, elapsed_ms: 60000 })],
   ],
 };
 

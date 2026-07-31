@@ -99,6 +99,18 @@ export async function mockChatStreamLento(
   );
 }
 
+/**
+ * Redirige el stream de una investigación profunda al servidor SSE de pruebas.
+ *
+ * Mismo motivo que `mockChatStreamLento`: el trabajo tiene que seguir vivo
+ * para poder pulsar "Detener" encima.
+ */
+export async function mockResearchStreamLento(page: Page): Promise<void> {
+  await page.route("**/api/research/stream/*", (route) =>
+    route.continue({ url: `${MOCK_SSE}?scenario=investigacion` }),
+  );
+}
+
 /** La caja de escribir. Es lo último que aparece: sirve de señal de "listo". */
 export function composer(page: Page) {
   return page.locator("textarea").first();

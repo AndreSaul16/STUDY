@@ -24,8 +24,14 @@ export function ResearchProgress() {
   const docs = useResearchStore((s) => s.docs);
   const elapsedMs = useResearchStore((s) => s.elapsedMs);
   const estimatedSeconds = useResearchStore((s) => s.estimatedSeconds);
+  const writing = useResearchStore((s) => s.writing);
+  const error = useResearchStore((s) => s.error);
 
-  const pct = total > 0 ? Math.min(100, Math.round((step / total) * 100)) : 4;
+  const pct = writing
+    ? 100
+    : total > 0
+      ? Math.min(100, Math.round((step / total) * 100))
+      : 4;
 
   return (
     <div className="mb-4 max-w-[68ch]" aria-live="polite">
@@ -61,31 +67,48 @@ export function ResearchProgress() {
 
         {plan.length > 0 && (
           <ul className="mt-2 space-y-1 border-t border-seam-light pt-2 dark:border-seam-dark">
-            {plan.map((item) => (
-              <li
-                key={item.id}
-                className={cn(
-                  "flex items-start gap-1.5 font-ui text-[11px]",
-                  item.id < step
-                    ? "text-muted-light dark:text-muted-dark"
-                    : item.id === step
-                      ? "text-reading-light dark:text-reading-dark"
-                      : "text-muted-light/60 dark:text-muted-dark/60",
-                )}
-              >
-                <span
-                  aria-hidden
+            {plan.map((item) => {
+              // `writing` cuenta como hecho: el `step` nunca pasa del último
+              // punto del plan, así que sin esto el último se quedaba con la
+              // flecha de "en curso" durante toda la redacción —la fase más
+              // larga— y parecía que se había atascado ahí.
+              const done = writing || item.id < step;
+              const current = !writing && item.id === step;
+              return (
+                <li
+                  key={item.id}
                   className={cn(
-                    "mt-0.5",
-                    item.id < step ? "text-amber-700 dark:text-amber-500" : "",
+                    "flex items-start gap-1.5 font-ui text-[11px]",
+                    done
+                      ? "text-muted-light dark:text-muted-dark"
+                      : current
+                        ? "text-reading-light dark:text-reading-dark"
+                        : "text-muted-light/60 dark:text-muted-dark/60",
                   )}
                 >
-                  {item.id < step ? "✓" : item.id === step ? "→" : "·"}
-                </span>
-                <span className="min-w-0 break-words">{item.question}</span>
-              </li>
-            ))}
+                  <span
+                    aria-hidden
+                    className={cn("mt-0.5", done && "text-amber-700 dark:text-amber-500")}
+                  >
+                    {done ? "✓" : current ? "→" : "·"}
+                  </span>
+                  <span className="min-w-0 break-words">{item.question}</span>
+                </li>
+              );
+            })}
           </ul>
+        )}
+
+        {/* El error se pinta AQUÍ y no solo en el store: el backend emite
+            `error` y acto seguido `done`, así que sin esto lo único que veía el
+            usuario era desaparecer la barra de progreso. */}
+        {error && (
+          <p
+            role="alert"
+            className="mt-2 font-ui text-[11px] text-red-700 dark:text-red-400"
+          >
+            {error}
+          </p>
         )}
 
         <p className="mt-2 font-ui text-[11px] text-muted-light dark:text-muted-dark">

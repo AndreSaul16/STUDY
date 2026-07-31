@@ -80,6 +80,28 @@ test.describe("Conversación", () => {
     await expect(page.getByRole("button", { name: "Reintentar" }).first()).toBeVisible();
   });
 
+  test("el mensaje del backend llega tal cual al usuario", async ({ page }) => {
+    await abrirApp(page);
+    // FastAPI manda el motivo en `detail` y suele ser accionable. Antes se
+    // tiraba y el usuario leía "HTTP 503: Service Unavailable".
+    await page.route("**/api/chat/stream", (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          detail: "Configura tu API key en Más → Ajustes de IA para usar el chat.",
+        }),
+      }),
+    );
+
+    await enviar(page, "Esto no tiene key");
+
+    await expect(
+      page.getByText("Configura tu API key en Más → Ajustes de IA para usar el chat."),
+    ).toBeVisible();
+    await expect(page.getByText(/HTTP 503/)).toHaveCount(0);
+  });
+
   test("cancelar guarda el parcial marcado como cancelado", async ({ page }) => {
     await abrirApp(page);
     // El escenario "parcial" manda un token y deja el stream abierto: el
