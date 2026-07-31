@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { cn } from "@/utils/cn";
 import { splitChatSegments } from "@/utils/chatSegments";
 import {
   markdownToPlainText,

@@ -48,20 +48,20 @@ function unwrapQuoted(text: string): string {
     changed = false;
     const bold = /^\*\*([\s\S]+)\*\*$/.exec(out);
     if (bold) {
-      out = bold[1].trim();
+      out = (bold[1] ?? out).trim();
       changed = true;
       continue;
     }
     const italic = /^[*_]([\s\S]+)[*_]$/.exec(out);
     if (italic) {
-      out = italic[1].trim();
+      out = (italic[1] ?? out).trim();
       changed = true;
     }
   }
 
   // Comillas rectas, tipográficas y españolas.
   const quoted = /^["“«]([\s\S]+)["”»]$/.exec(out);
-  if (quoted) out = quoted[1].trim();
+  if (quoted) out = (quoted[1] ?? out).trim();
 
   return out;
 }

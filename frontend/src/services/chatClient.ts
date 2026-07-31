@@ -53,7 +53,7 @@ export function buildRequestMessages(
 ): ChatRequestMessage[] {
   let window = messages.slice(-MAX_HISTORY_MESSAGES);
 
-  while (window.length > 0 && window[0].role !== "user") {
+  while (window.length > 0 && window[0]?.role !== "user") {
     window = window.slice(1);
   }
 

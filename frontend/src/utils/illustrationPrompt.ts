@@ -52,7 +52,7 @@ function looksBiblical(sentence: string): boolean {
  */
 export function proposeIllustrationPrompt(content: string): string {
   const heading = /^#{1,4}\s+(.+)$/m.exec(content || "");
-  const title = heading ? clean(heading[1]) : "";
+  const title = heading ? clean(heading[1] ?? "") : "";
 
   const sentences = clean((content || "").replace(/^#{1,4}\s+.+$/gm, ""))
     .split(/(?<=[.!?])\s+/)

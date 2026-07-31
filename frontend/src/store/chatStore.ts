@@ -305,8 +305,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // pedir la misma herramienta varias veces en el mismo turno.
       const next = [...s.activity];
       for (let i = next.length - 1; i >= 0; i -= 1) {
-        if (next[i].name === name && !next[i].done) {
-          next[i] = { ...next[i], done: true, summary };
+        const item = next[i];
+        if (item && item.name === name && !item.done) {
+          next[i] = { ...item, done: true, summary };
           break;
         }
       }
@@ -368,7 +369,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (s.messages.length === 0) return {};
       const next = [...s.messages];
       const last = next[next.length - 1];
-      if (last.role !== "assistant") return {};
+      if (!last || last.role !== "assistant") return {};
       next[next.length - 1] = { ...last, suggestions };
       return { messages: next };
     }),
