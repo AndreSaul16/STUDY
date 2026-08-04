@@ -18,6 +18,14 @@ interface UIState {
   searchOpen: boolean;
   /** Panel de investigación visible en el split de escritorio */
   researchOpen: boolean;
+  /**
+   * Ancho del panel de investigación, en % del ancho disponible.
+   *
+   * Se guarda porque es una preferencia de trabajo, no un estado de sesión:
+   * quien lee capítulos largos lo quiere ancho y quien solo mira referencias
+   * lo quiere estrecho, y volver a arrastrarlo en cada arranque cansa.
+   */
+  researchWidth: number;
   toggleTheme: () => void;
   setTheme: (t: Theme) => void;
   setView: (v: AppView) => void;
@@ -25,7 +33,13 @@ interface UIState {
   setMobileSheetOpen: (open: boolean) => void;
   setSearchOpen: (open: boolean) => void;
   setResearchOpen: (open: boolean) => void;
+  setResearchWidth: (percent: number) => void;
 }
+
+/** Topes del arrastre. Por debajo o por encima, ninguno de los dos trabaja. */
+export const RESEARCH_WIDTH_MIN = 25;
+export const RESEARCH_WIDTH_MAX = 75;
+export const RESEARCH_WIDTH_DEFAULT = 45;
 
 export const useUIStore = create<UIState>()(
   persist(
@@ -40,6 +54,7 @@ export const useUIStore = create<UIState>()(
       mobileSheetOpen: false,
       searchOpen: false,
       researchOpen: true,
+      researchWidth: RESEARCH_WIDTH_DEFAULT,
 
       toggleTheme: () =>
         set((s) => ({
@@ -51,6 +66,13 @@ export const useUIStore = create<UIState>()(
       setMobileSheetOpen: (mobileSheetOpen) => set({ mobileSheetOpen }),
       setSearchOpen: (searchOpen) => set({ searchOpen }),
       setResearchOpen: (researchOpen) => set({ researchOpen }),
+      setResearchWidth: (percent) =>
+        set({
+          researchWidth: Math.min(
+            RESEARCH_WIDTH_MAX,
+            Math.max(RESEARCH_WIDTH_MIN, Math.round(percent)),
+          ),
+        }),
     }),
     {
       name: "study-ui",
@@ -60,6 +82,7 @@ export const useUIStore = create<UIState>()(
         theme: s.theme,
         view: s.view,
         researchOpen: s.researchOpen,
+        researchWidth: s.researchWidth,
       }),
     },
   ),

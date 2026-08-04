@@ -29,6 +29,16 @@ class ProviderDTO(BaseModel):
     supports_images: bool
     supports_deep_research: bool
     image_models: List[str] = []
+    # ─── Voz ───
+    # Van con default para que un cliente desplegado que no los conoce siga
+    # validando la respuesta, y para que el frontend sepa qué ofrecer sin
+    # tener que codificar en su lado qué proveedor tiene voz. Listas vacías =
+    # capacidad NO verificada: la interfaz no la ofrece.
+    supports_stt: bool = False
+    supports_tts: bool = False
+    stt_models: List[str] = []
+    tts_models: List[str] = []
+    tts_voices: List[str] = []
 
 
 class ServerDefaultsDTO(BaseModel):

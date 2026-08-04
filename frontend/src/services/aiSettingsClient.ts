@@ -35,14 +35,54 @@ export class InvalidApiKeyError extends Error {
   }
 }
 
-function isProvider(value: unknown): value is AiProvider {
-  if (!value || typeof value !== "object") return false;
+/** Lista de cadenas saneada. Un backend antiguo no manda el campo siquiera. */
+function toStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+/**
+ * Normaliza un proveedor del backend, campo a campo.
+ *
+ * Antes esto era un type guard que devolvía el objeto crudo con un `as`: si el
+ * backend no mandaba un campo, el tipo decía que estaba y en tiempo de
+ * ejecución era `undefined`. Con las capacidades de voz eso rompería la
+ * pestaña entera (`p.stt_models.length` sobre `undefined`) al hablar con un
+ * backend anterior a esta versión, así que se rellena aquí.
+ */
+function toProvider(value: unknown): AiProvider[] {
+  if (!value || typeof value !== "object") return [];
   const p = value as Record<string, unknown>;
-  return (
-    typeof p.id === "string" &&
-    typeof p.label === "string" &&
-    Array.isArray(p.efforts)
-  );
+  if (typeof p.id !== "string" || typeof p.label !== "string") return [];
+  if (!Array.isArray(p.efforts)) return [];
+
+  const stt = toStringList(p.stt_models);
+  const tts = toStringList(p.tts_models);
+  const voices = toStringList(p.tts_voices);
+
+  return [
+    {
+      id: p.id,
+      label: p.label,
+      key_hint: typeof p.key_hint === "string" ? p.key_hint : "",
+      key_url: typeof p.key_url === "string" ? p.key_url : "",
+      default_model: typeof p.default_model === "string" ? p.default_model : "",
+      efforts: p.efforts.filter(
+        (e): e is { id: string; label: string } =>
+          !!e && typeof e === "object" && typeof (e as { id?: unknown }).id === "string",
+      ),
+      supports_images: p.supports_images === true,
+      supports_deep_research: p.supports_deep_research === true,
+      image_models: toStringList(p.image_models),
+      // Se derivan de las listas y no del booleano del backend: si el booleano
+      // dijera true con la lista vacía, la interfaz ofrecería un selector sin
+      // nada dentro.
+      supports_stt: p.supports_stt === true && stt.length > 0,
+      supports_tts: p.supports_tts === true && tts.length > 0 && voices.length > 0,
+      stt_models: stt,
+      tts_models: tts,
+      tts_voices: voices,
+    },
+  ];
 }
 
 function toModel(value: unknown): AiModel[] {
@@ -80,7 +120,7 @@ export async function fetchProviders(): Promise<AiProvidersResponse> {
 
     const raw = payload as Record<string, unknown>;
     const providers = Array.isArray(raw.providers)
-      ? raw.providers.filter(isProvider)
+      ? raw.providers.flatMap(toProvider)
       : [];
     if (providers.length === 0) return fallback;
 

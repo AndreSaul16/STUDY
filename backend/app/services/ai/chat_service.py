@@ -36,14 +36,17 @@ from .chat_modes import DEFAULT_MODE, CHAT_MODES, ModeSpec, get_mode, list_modes
 from .chat_providers import (
     PROVIDERS,
     ChatRuntime,
+    ReasoningStripper,
     build_runtime,
     effort_params,
     server_runtime,
     tool_choice_for,
 )
+from .local_library import LocalSnippet, build_context_message
 from .mcp_bridge import get_mcp_bridge
-from .native_tools import NATIVE_TOOLS, call_native_tool, is_native_tool
+from .native_tools import NATIVE_TOOLS, call_native_tool, is_native_tool, tools_for
 from .redaction import redact
+from .research_config import ResearchConfig
 from .research_policy import (
     budget_exhausted,
     executed_tool_names,
@@ -53,9 +56,12 @@ from .research_policy import (
 from .source_tracker import SourceTracker
 from .style_guide import (
     CITATION_CONTRACT,
+    DATE_POLICY,
+    DOCTRINAL_POLICY,
     IDENTITY,
     LANGUAGE_POLICY,
     RESEARCH_POLICY,
+    RESOURCEFULNESS,
     TOOL_CATALOG,
     VOICE_GUIDE,
 )
@@ -163,25 +169,34 @@ _FOLLOWUPS_PROMPT = (
 )
 
 
-def build_system_prompt(mode: ModeSpec) -> str:
+def build_system_prompt(mode: ModeSpec, web_enabled: bool = False) -> str:
     """
     Compone el system prompt del chat para un modo concreto.
 
     El orden importa: primero quién eres y cómo investigas, después la voz (que
     aplica siempre), y solo entonces la plantilla de la pieza. El contrato de
     citas va al final para que quede cerca de la generación.
+
+    ``DOCTRINAL_POLICY`` solo entra si hay búsqueda externa activada: habla de
+    una herramienta que en el resto de los casos no existe, y darle al modelo
+    reglas sobre algo que no puede hacer solo gasta contexto y le invita a
+    intentar llamarla.
     """
-    return "\n\n".join(
-        [
-            IDENTITY,
-            RESEARCH_POLICY,
-            LANGUAGE_POLICY,
-            VOICE_GUIDE,
-            mode.prompt,
-            CITATION_CONTRACT,
-            TOOL_CATALOG,
-        ]
-    )
+    bloques = [
+        IDENTITY,
+        RESEARCH_POLICY,
+        # Va pegado a la política de investigación: es su contrapeso. Aquella
+        # prohíbe responder sin fuentes y esta impide que esa prohibición se
+        # convierta en "no encontré nada" a la primera.
+        RESOURCEFULNESS,
+        DATE_POLICY,
+        LANGUAGE_POLICY,
+        VOICE_GUIDE,
+    ]
+    if web_enabled:
+        bloques.append(DOCTRINAL_POLICY)
+    bloques += [mode.prompt, CITATION_CONTRACT, TOOL_CATALOG]
+    return "\n\n".join(bloques)
 
 
 #: Prompt del modo por defecto. Se conserva a nivel de módulo por compatibilidad
@@ -283,11 +298,28 @@ class ChatService:
         self.tools = [*NATIVE_TOOLS, *self.mcp_tools]
         self._tools_loaded = True
 
-    async def _run_tool(self, name: str, args: Dict[str, Any]) -> str:
+    def tools_for(self, config: Optional[ResearchConfig] = None) -> list[Dict[str, Any]]:
+        """
+        Catálogo que se le ofrece al modelo en ESTA petición.
+
+        ``self.tools`` es el suelo común (nativas + MCP) y se cachea porque es
+        caro de cargar; la de internet se añade encima solo si el usuario la
+        activó. Meterla en el catálogo cacheado la encendería para todos.
+        """
+        if config is None or not config.internet:
+            return self.tools
+        return [*tools_for(config), *self.mcp_tools]
+
+    async def _run_tool(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        config: Optional[ResearchConfig] = None,
+    ) -> str:
         """Ejecuta una herramienta (nativa o MCP) y devuelve su resultado en JSON."""
         try:
             if is_native_tool(name):
-                result = await asyncio.to_thread(call_native_tool, name, args)
+                result = await asyncio.to_thread(call_native_tool, name, args, config)
             else:
                 bridge = get_mcp_bridge()
                 result = await asyncio.to_thread(bridge.call_tool, name, args)
@@ -335,6 +367,8 @@ class ChatService:
         messages: list[Dict[str, str]],
         mode: Optional[str] = None,
         runtime: Optional[ChatRuntime] = None,
+        config: Optional[ResearchConfig] = None,
+        local_snippets: Optional[Sequence[LocalSnippet]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Genera una respuesta de chat con streaming SSE.
@@ -345,6 +379,12 @@ class ChatService:
             runtime: proveedor/modelo/esfuerzo de ESTA petición. Si es ``None``
                 se usa el del servidor (las env vars de siempre), que es lo que
                 hace un cliente antiguo que no manda nada.
+            config: ajustes de investigación del usuario. En el chat normal se
+                usa ``offline()``: internet es cosa de la investigación
+                profunda, no de una pregunta suelta de treinta segundos.
+            local_snippets: fragmentos de las publicaciones .jwpub que el
+                usuario tiene en su dispositivo y ha autorizado (ver
+                local_library.py). Vacío o ``None`` = el chat de siempre.
 
         Yields:
             Eventos SSE formateados (event: type\\ndata: json\\n\\n)
@@ -360,14 +400,37 @@ class ChatService:
 
         await self.ensure_tools()
 
+        settings = config or ResearchConfig.offline()
+        tools = self.tools_for(settings)
         mode_spec = get_mode(mode)
-        full_messages: list[Dict[str, Any]] = [
-            {"role": "system", "content": build_system_prompt(mode_spec)}
-        ] + list(messages)
+
+        # Los libros del usuario entran como un mensaje de sistema propio, justo
+        # detrás del prompt y ANTES de la conversación: así el modelo ya los
+        # tiene delante en la primera ronda de herramientas y puede buscar para
+        # completarlos, en vez de descubrirlos cuando ya decidió qué mirar.
+        #
+        # Mensaje aparte y no pegado al system prompt a propósito: esto es
+        # contenido que cambia en cada turno y lo trae el cliente, así que no
+        # debe mezclarse con las instrucciones del sistema, que son fijas.
+        prefacio: list[Dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": build_system_prompt(mode_spec, settings.internet),
+            }
+        ]
+        contexto_local = build_context_message(local_snippets or [])
+        if contexto_local:
+            prefacio.append({"role": "system", "content": contexto_local})
+
+        full_messages: list[Dict[str, Any]] = prefacio + list(messages)
 
         total_tokens = 0
         total_tool_calls = 0
         tracker = SourceTracker()
+        # Se registran ANTES del bucle: aunque el modelo no llame a ninguna
+        # herramienta, estas fuentes se consultaron —el usuario las puso sobre
+        # la mesa— y tienen que salir en los chips igualmente.
+        tracker.record_local_library(local_snippets or [])
         # Caché por petición: el modelo reabre el mismo doc_id en rondas
         # distintas con frecuencia, y cada scrape cuesta ~20 s.
         tool_cache: Dict[str, str] = {}
@@ -381,7 +444,7 @@ class ChatService:
         # devolvemos los resultados. Cuando deja de pedir herramientas (o se
         # agota el presupuesto) salimos y hacemos la respuesta final en
         # streaming SIN tools (para forzar que responda).
-        if self.tools:
+        if tools:
             force_tools = True
             for round_idx in range(CHAT_MAX_TOOL_ROUNDS):
                 if round_idx > 0 and budget_exhausted(
@@ -402,7 +465,7 @@ class ChatService:
                     response = await runtime.client.chat.completions.create(
                         model=runtime.model,
                         messages=full_messages,
-                        tools=self.tools,
+                        tools=tools,
                         tool_choice=tool_choice,
                         max_completion_tokens=OPENAI_MAX_TOKENS,
                         **runtime.tool_params,
@@ -490,7 +553,9 @@ class ChatService:
                     cache_key = tool_cache_key(tool_name, tool_args)
                     content = tool_cache.get(cache_key)
                     if content is None:
-                        content = await self._run_tool(tool_name, tool_args)
+                        content = await self._run_tool(
+                            tool_name, tool_args, settings
+                        )
                         tool_cache[cache_key] = content
 
                     yield ": ping\n\n"
@@ -515,7 +580,7 @@ class ChatService:
                         "content": content,
                     })
 
-        # FUERA del `if self.tools:` a propósito. Sin herramientas (el MCP caído
+        # FUERA del `if tools:` a propósito. Sin herramientas (el MCP caído
         # y las nativas desactivadas) no hay fuentes que enviar, pero el
         # `metadata` sigue haciendo falta: es lo que se persiste con el mensaje
         # y lo que pinta el pie "modelo · esfuerzo". Dentro del `if`, esas
@@ -535,6 +600,9 @@ class ChatService:
 
         # ─── Ronda final: respuesta en streaming SIN tools ────────────
         answer = ""
+        # MiniMax escribe su razonamiento dentro del contenido; sin esto el
+        # usuario ve el monólogo interno delante de su comentario.
+        limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
         try:
             final_stream = await runtime.client.chat.completions.create(
                 model=runtime.model,
@@ -551,8 +619,10 @@ class ChatService:
                     continue
                 delta = chunk.choices[0].delta
                 if delta.content:
-                    answer += delta.content
-                    yield self._format_sse("token", {"text": delta.content})
+                    visible = limpiador.feed(delta.content)
+                    if visible:
+                        answer += visible
+                        yield self._format_sse("token", {"text": visible})
         except Exception as exc:
             logger.error("Stream fallido (respuesta final): %s", redact(exc))
             for event in self._fail(
@@ -560,6 +630,11 @@ class ChatService:
             ):
                 yield event
             return
+
+        cola = limpiador.flush()
+        if cola:
+            answer += cola
+            yield self._format_sse("token", {"text": cola})
 
         suggestions = await self._generate_followups(
             runtime, full_messages, answer, mode_spec

@@ -32,12 +32,25 @@ function relativeDate(seconds: number): string {
  * Sustituye al botón "Limpiar" que borraba todo sin preguntar. Aquí se abre,
  * se renombra, se fija y se borra con confirmación explícita, conversación a
  * conversación.
+ *
+ * Con varias conversaciones abiertas a la vez sigue siendo el historial
+ * COMPLETO, no la lista de abiertas: para eso está la tira de pestañas. Lo que
+ * gana aquí es el estado —abierta, generando— de las que sí lo están, para que
+ * abrir el cajón sea suficiente para saber qué está pasando en cada una.
  */
 export function ConversationsDrawer() {
   const open = useChatStore((s) => s.drawerOpen);
   const setOpen = useChatStore((s) => s.setDrawerOpen);
   const conversations = useChatStore((s) => s.conversations);
   const conversationId = useChatStore((s) => s.conversationId);
+  // Cadenas y no arrays: estos selectores se evalúan en cada token que llega, y
+  // un array nuevo cada vez repintaría el cajón entero decenas de veces por
+  // segundo. Una cadena se compara por valor y solo cambia cuando cambia de
+  // verdad qué está abierto o generando.
+  const openIds = useChatStore((s) => s.openIds.join(","));
+  const streamingIds = useChatStore((s) =>
+    s.openIds.filter((id) => s.sessions[id]?.isStreaming).join(","),
+  );
   const modes = useChatModes();
   const reducedMotion = usePrefersReducedMotion();
 
@@ -48,16 +61,16 @@ export function ConversationsDrawer() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
 
+  const isOpen = (id: string) => openIds.split(",").includes(id);
+  const isStreaming = (id: string) => streamingIds.split(",").includes(id);
+
   const commitRename = (conversationId: string) => {
     const title = draftTitle.trim();
     if (title) {
-      // El store solo sabe renombrar la conversación abierta; para renombrar
-      // cualquiera se abre primero. Es además lo que el usuario espera.
-      const store = useChatStore.getState();
-      if (store.conversationId !== conversationId) {
-        store.openConversation(conversationId);
-      }
-      useChatStore.getState().renameCurrent(title);
+      // Ya no hace falta abrir la conversación para renombrarla: abrirla
+      // gastaría una de las cinco pestañas —y podría desalojar otra— por un
+      // cambio de título.
+      useChatStore.getState().rename(conversationId, title);
     }
     setRenaming(null);
     setDraftTitle("");
@@ -136,6 +149,8 @@ export function ConversationsDrawer() {
           {conversations.map((conversation) => {
             const active = conversation.conversationId === conversationId;
             const pendingDelete = confirmDelete === conversation.conversationId;
+            const abierta = isOpen(conversation.conversationId);
+            const generando = isStreaming(conversation.conversationId);
 
             return (
               <li key={conversation.conversationId} className="mb-0.5">
@@ -169,19 +184,34 @@ export function ConversationsDrawer() {
                       }
                       className="flex min-h-[56px] min-w-0 flex-1 flex-col justify-center gap-0.5 px-3 py-2 text-left"
                     >
-                      <span
-                        className={cn(
-                          "truncate font-ui text-sm",
-                          active
-                            ? "font-medium text-amber-800 dark:text-amber-300"
-                            : "text-reading-light dark:text-reading-dark",
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        {/* El punto va en la lista y no solo en las pestañas:
+                            una conversación puede estar generando y no caber
+                            en la parte visible de la tira. */}
+                        {generando && (
+                          <span
+                            aria-hidden
+                            className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-600 dark:bg-amber-500"
+                          />
                         )}
-                      >
-                        {conversation.title}
+                        <span
+                          className={cn(
+                            "truncate font-ui text-sm",
+                            active
+                              ? "font-medium text-amber-800 dark:text-amber-300"
+                              : "text-reading-light dark:text-reading-dark",
+                          )}
+                        >
+                          {conversation.title}
+                        </span>
                       </span>
                       <span className="truncate font-ui text-[11px] text-muted-light dark:text-muted-dark">
-                        {chatModeLabel(modes, conversation.mode)} ·{" "}
-                        {relativeDate(conversation.updatedAt)}
+                        {generando
+                          ? "Generando…"
+                          : abierta
+                            ? "Abierta"
+                            : chatModeLabel(modes, conversation.mode)}{" "}
+                        · {relativeDate(conversation.updatedAt)}
                       </span>
                     </button>
                   )}

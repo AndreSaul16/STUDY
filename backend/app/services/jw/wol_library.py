@@ -40,7 +40,7 @@ from dataclasses import asdict, dataclass, field
 import httpx
 from bs4 import BeautifulSoup
 
-from . import content_cache
+from . import content_cache, pub_dates
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,35 @@ _SEARCH_URL = f"{_WOL_ORIGIN}/es/wol/s/r4/lp-s"
 _DOC_URL = f"{_WOL_ORIGIN}/es/wol/d/r4/lp-s"
 _TIMEOUT_SECONDS = 20.0
 _USER_AGENT = "StudyApp/1.0 (+https://wol.jw.org)"
+
+#: Ordenación del buscador de WOL (parámetro ``r``), con el nombre que usa la
+#: app por delante. Los valores son los del propio desplegable de wol.jw.org:
+#: "Ordenar según frecuencia", "…por fecha más reciente", "…más antigua".
+SORT_MODES = {
+    "relevancia": "occ",
+    "reciente": "newest",
+    "antiguo": "oldest",
+}
+
+#: Escalera de cercanía del buscador de WOL (parámetro ``p``), de más estricta
+#: a más laxa: misma oración → mismo párrafo → mismo artículo.
+#:
+#: **Este es el arreglo del fallo más molesto que tenía la app.** El código
+#: pedía siempre ``par`` (mismo párrafo), que exige que TODOS los términos
+#: aparezcan juntos en un mismo párrafo. Con dos o tres palabras va de sobra,
+#: pero con una pregunta en lenguaje natural no casa nada. Medido contra WOL con
+#: la consulta real "usar jw.org alguien habla otro idioma predicación":
+#:
+#:     p=sen → 0 resultados
+#:     p=par → 0 resultados     ← lo que pedía la app siempre
+#:     p=doc → 17 resultados
+#:
+#: Es decir: el material estaba ahí y el agente concluía "no encontré nada" y se
+#: negaba a responder. Ahora se empieza por lo preciso y solo se relaja si no
+#: hay nada, así que las consultas cortas conservan su precisión de siempre y
+#: las largas dejan de morir. El coste es una petición extra únicamente cuando
+#: la primera fracasa, que es justo el caso en el que la app no servía.
+PROXIMITY_LADDER = ("par", "doc")
 
 _SEARCH_CACHE_MAX = 128
 _DOC_CACHE_MAX = 64
@@ -87,8 +116,26 @@ class SearchResult:
     """Símbolo de la publicación, ej. "w06"."""
     url: str
 
+    @property
+    def year(self) -> int | None:
+        """
+        Año de la publicación, deducido de la cita o del símbolo.
+
+        Aquí sí es fiable: la cita de WOL tiene formato ("símbolo fecha págs. …
+        - Publicación AAAA"), a diferencia de los títulos de la búsqueda de
+        jw.org. Es ``None`` en libros y obras de referencia sin año.
+        """
+        return pub_dates.year_from_citation(self.citation) or pub_dates.year_from_symbol(
+            self.publication
+        )
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data["anio"] = self.year
+        nota = pub_dates.freshness_note(self.year)
+        if nota:
+            data["aviso_fecha"] = nota
+        return data
 
 
 @dataclass(frozen=True)
@@ -122,6 +169,18 @@ class WolDocument:
     citation: str
     url: str
     blocks: list[WolBlock] = field(default_factory=list)
+
+    @property
+    def year(self) -> int | None:
+        """
+        Año de la publicación, deducido del símbolo del ``<article>``.
+
+        Es la única fecha que publica la página del documento, y es fiable:
+        ``pub-mwb19`` es la guía de actividades de 2019, ``pub-w06`` La Atalaya
+        de 2006. ``None`` en libros y obras de referencia sin año (``pub-it-1``,
+        ``pub-cf``), que no caducan.
+        """
+        return pub_dates.year_from_symbol(self.citation)
 
     def to_dict(self) -> dict:
         return {
@@ -176,33 +235,14 @@ def _first_match(classes: list[str], pattern: re.Pattern) -> str | None:
 # ─── Búsqueda ────────────────────────────────────────────────────
 
 
-def search_library(query: str, limit: int = 8) -> list[SearchResult]:
+def _parse_results(html: str, limit: int) -> list[SearchResult]:
     """
-    Busca ``query`` en la Biblioteca en Línea (español) y devuelve los
-    resultados más relevantes.
+    Convierte la página de resultados de WOL en objetos del dominio.
 
-    Los resultados vienen ordenados por relevancia por el propio WOL; sólo
-    recortamos a ``limit``.
+    Está aparte de ``search_library`` porque la escalera de cercanía la llama
+    una vez por intento; en línea habría que duplicarla o meter el parseo en un
+    bucle que ya hace otra cosa.
     """
-    clean = " ".join(query.split())
-    if not clean:
-        return []
-
-    cache_key = f"{clean}|{limit}"
-    cached = _search_cache.get(cache_key)
-    if cached is not None:
-        _search_cache.move_to_end(cache_key)
-        return cached
-
-    # Caché en disco: sobrevive al reinicio y no tiene el tope de la de
-    # memoria. Las búsquedas caducan porque WOL sí añade publicaciones.
-    persistido = content_cache.get("search", cache_key)
-    if persistido is not None:
-        results = [SearchResult(**r) for r in persistido]
-        _cache_put(_search_cache, cache_key, results, _SEARCH_CACHE_MAX)
-        return results
-
-    html = _get(_SEARCH_URL, params={"q": clean, "p": "par", "r": "occ"})
     soup = BeautifulSoup(html, "html.parser")
 
     results: list[SearchResult] = []
@@ -244,6 +284,73 @@ def search_library(query: str, limit: int = 8) -> list[SearchResult]:
         if len(results) >= limit:
             break
 
+    return results
+
+
+def search_library(
+    query: str,
+    limit: int = 8,
+    sort: str | None = None,
+    since: int | None = None,
+    until: int | None = None,
+) -> list[SearchResult]:
+    """
+    Busca ``query`` en la Biblioteca en Línea (español) y devuelve los
+    resultados más relevantes.
+
+    ``sort`` usa la ordenación del propio WOL (``r=occ|newest|oldest``), y
+    ``since``/``until`` recortan por año DESPUÉS, porque WOL no tiene filtro de
+    rango. Con filtro activo se piden más resultados de los que se devuelven,
+    para no acabar con dos por un detalle de implementación. Lo que no lleva
+    año en la cita —libros, Perspicacia— nunca se descarta.
+    """
+    clean = " ".join(query.split())
+    if not clean:
+        return []
+
+    tope = max(1, min(int(limit or 8), 20))
+    hay_filtro = since is not None or until is not None
+    # Relevancia también cuando hay filtro de años. Se probó lo contrario
+    # —pedir a WOL ``newest`` cuando llega ``desde_anio``— y sale peor: la
+    # ordenación por fecha de WOL saca primero las obras sin año (Biblia de
+    # estudio, cancionero) y las Atalayas recientes del tema no aparecen. Con
+    # relevancia + recorte salen los artículos que de verdad tratan el tema.
+    orden = SORT_MODES.get(sort or "relevancia", "occ")
+    # Con filtro se pide de más, porque el recorte por año es posterior: pedir
+    # 6 y quedarse con 1 es la diferencia entre un filtro útil y uno que
+    # aparenta que no hay material.
+    pedidos = min(tope * 5, 50) if hay_filtro else tope
+
+    cache_key = f"{clean}|{pedidos}|{orden}"
+    cached = _search_cache.get(cache_key)
+    if cached is None:
+        # Caché en disco: sobrevive al reinicio y no tiene el tope de la de
+        # memoria. Las búsquedas caducan porque WOL sí añade publicaciones.
+        persistido = content_cache.get("search", cache_key)
+        if persistido is not None:
+            cached = [SearchResult(**r) for r in _without_derived(persistido)]
+            _cache_put(_search_cache, cache_key, cached, _SEARCH_CACHE_MAX)
+
+    if cached is not None:
+        if cache_key in _search_cache:
+            _search_cache.move_to_end(cache_key)
+        return _apply_year_filter(cached, since, until, tope)
+
+    # Cercanía progresiva: si la más estricta no encuentra nada, se relaja.
+    # Ver PROXIMITY_LADDER para el porqué; es el arreglo de la queja más
+    # frecuente del usuario ("Sin resultados" una y otra vez).
+    results: list[SearchResult] = []
+    for cercania in PROXIMITY_LADDER:
+        html = _get(_SEARCH_URL, params={"q": clean, "p": cercania, "r": orden})
+        results = _parse_results(html, pedidos)
+        if results:
+            break
+        logger.info(
+            "WOL no devolvió nada para %r con p=%s; relajando la cercanía.",
+            clean,
+            cercania,
+        )
+
     _cache_put(_search_cache, cache_key, results, _SEARCH_CACHE_MAX)
     content_cache.put(
         "search",
@@ -251,7 +358,36 @@ def search_library(query: str, limit: int = 8) -> list[SearchResult]:
         [r.to_dict() for r in results],
         ttl_seconds=content_cache.search_ttl(),
     )
-    return results
+    return _apply_year_filter(results, since, until, tope)
+
+
+#: Campos que ``to_dict`` añade y que el constructor de ``SearchResult`` no
+#: acepta. Se calculan del año, que a su vez sale de la cita: guardarlos en la
+#: caché está bien (son lo que se le enseña al modelo), pero al reconstruir el
+#: objeto hay que quitarlos o el ``SearchResult(**r)`` revienta con un
+#: TypeError. Pasó con una caché ya escrita: la app arrancaba y la primera
+#: búsqueda repetida fallaba.
+_DERIVED_FIELDS = ("anio", "aviso_fecha")
+
+
+def _without_derived(rows: list[dict]) -> list[dict]:
+    return [
+        {k: v for k, v in row.items() if k not in _DERIVED_FIELDS}
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def _apply_year_filter(
+    results: list[SearchResult],
+    since: int | None,
+    until: int | None,
+    limit: int,
+) -> list[SearchResult]:
+    """Recorta por rango de años y por número. Lo no fechable siempre pasa."""
+    if since is None and until is None:
+        return results[:limit]
+    return [r for r in results if pub_dates.within_range(r.year, since, until)][:limit]
 
 
 # ─── Documento ───────────────────────────────────────────────────
@@ -355,12 +491,18 @@ def get_document(doc_id: int) -> WolDocument:
     # 25-29") en ningún elemento propio — sólo aparece en los resultados de
     # búsqueda. Como sustituto usamos el símbolo de la publicación, que sí
     # viene en las clases del <article> (``pub-w06``).
+    #
+    # El <article> trae VARIOS: la familia sin año y la edición con año
+    # ("pub-mwb" y "pub-mwb19", repetidos). Se prefiere el que lleva año, que
+    # es el único que sirve para fechar el documento; coger "el último" era
+    # correcto por casualidad, según el orden en que WOL escupa las clases.
     article_pubs = [
         p
         for p in (_first_match([c], _PUB_RE) for c in (article.get("class") or []))
         if p
     ]
-    citation = article_pubs[-1] if article_pubs else ""
+    con_anio = [p for p in article_pubs if pub_dates.year_from_symbol(p) is not None]
+    citation = (con_anio or article_pubs or [""])[-1]
 
     document = WolDocument(
         doc_id=doc_id,

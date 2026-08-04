@@ -6,7 +6,10 @@ import { APP_VIEWS, RESEARCH_TABS, THEMES } from "@/types/domain";
 import type { ResearchTab } from "@/types/domain";
 import { Divider } from "@/components/atoms/Divider";
 import { AiSettingsSection } from "@/components/organisms/AiSettingsSection";
+import { ResearchSettingsSection } from "@/components/organisms/ResearchSettingsSection";
+import { LocalBooksSettingsSection } from "@/components/organisms/LocalBooksSettingsSection";
 import { ImagesSettingsRow } from "@/components/molecules/ImagesSettingsRow";
+import { OfflineLibraryRow } from "@/components/molecules/OfflineLibraryRow";
 import { useChatModes } from "@/components/molecules/ModePicker";
 import { useChatStore } from "@/store/chatStore";
 import {
@@ -113,6 +116,11 @@ export function MoreScreen({ className }: MoreScreenProps) {
       {/* La configuración de IA va ANTES que la de la base local: es lo que
           el usuario viene a tocar, y "Exportar" es de uso trimestral. */}
       <AiSettingsSection />
+      <ResearchSettingsSection />
+      {/* Detrás de Investigación porque las dos deciden lo mismo —de dónde
+          saca material la IA— y las dos tienen una consecuencia que hay que
+          aceptar a sabiendas. Juntas se leen como un bloque. */}
+      <LocalBooksSettingsSection />
       <Settings />
       </div>
     </div>
@@ -204,6 +212,10 @@ function Settings() {
         </label>
 
         <ImagesSettingsRow />
+
+        {/* Va antes de exportar/importar porque es de uso real —una descarga
+            que se deja corriendo— y aquello es de uso trimestral. */}
+        <OfflineLibraryRow />
 
         <button
           onClick={doExport}

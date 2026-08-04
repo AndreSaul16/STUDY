@@ -251,3 +251,55 @@ export const REFERENCE_ICONS = {
   link: IconLink,
   glossary: IconGlossary,
 } as const;
+
+export function IconPlay(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M10.5 8.5v7l5.5-3.5z" />
+    </svg>
+  );
+}
+
+export function IconGlobe(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18" />
+    </svg>
+  );
+}
+
+export function IconMic(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+    </svg>
+  );
+}
+
+/** Cuadrado de "detener". Se usa en el botón de grabación, que es un toggle. */
+export function IconStop(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
+/**
+ * Marca de verificación, para las casillas.
+ *
+ * Trazo 2.5 y no el 1.5 de la base: dentro de una casilla de 24 px el trazo
+ * fino se pierde contra el fondo de color y no se distingue si está marcada.
+ */
+export function IconCheck(p: IconProps) {
+  return (
+    <svg {...base} strokeWidth={2.5} {...p}>
+      <path d="m5 12.5 4.5 4.5L19 7" />
+    </svg>
+  );
+}

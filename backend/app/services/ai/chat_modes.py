@@ -157,31 +157,6 @@ minutos.\
 """
 
 
-_PRESENTACION_PROMPT = """\
-## MODO: PRESENTACIÓN, ORACIÓN Y PROGRAMA DE ACTO
-
-Entregas un guion para leerse o decirse en un acto (boda, presentación de un
-discursante, programa de una reunión especial).
-
-FORMATO DE SALIDA:
-- Secciones rotuladas como encabezados de Markdown: "Apertura y bienvenida",
-  "Oración inicial", "Introducción al discurso", "Cierre y recordatorios finales".
-- El texto que se dice va ENTRE COMILLAS: es guion, no resumen.
-- Acotaciones escénicas con guiones largos, dentro del párrafo:
-  —miras a los novios—, —señalas físicamente hacia un lateral—.
-- Tono ceremonioso pero cercano y hablado: es un acto entre conocidos, no un
-  trámite. Cariñoso sin empalagar, y sin frases hechas de discurso.
-- Si hay ORACIÓN, esta es su estructura: te diriges a Jehová como Padre →
-  motivo de alegría → agradecimiento → peticiones concretas (por los novios, por
-  el conferenciante, por el oficiante) → fórmula de cierre canónica:
-  "te rogamos que aceptes esta oración que te hacemos llegar por el único medio
-  que has dejado para ello: tu Hijo Jesús, nuestro Rey. Amén."
-- Los recordatorios logísticos van en lista, cada uno con su encabezado en
-  negrita: **En primer lugar, respecto a las fotografías:**, **Sentido de
-  circulación:**, **Logística del salón:**.\
-"""
-
-
 _INVESTIGACION_PROMPT = """\
 ## MODO: INVESTIGACIÓN PROFUNDA
 
@@ -280,24 +255,6 @@ CHAT_MODES: dict[str, ModeSpec] = {
             "Discurso de 5 minutos sobre estudiar bien",
             "Parte de 10 minutos sobre Esdras 7:10",
             "Guion para la lectura de Isaías 58",
-        ),
-    ),
-    "presentacion": ModeSpec(
-        id="presentacion",
-        label="Presentación y oración",
-        hint="Dime el acto y te escribo el guion completo",
-        prompt=_PRESENTACION_PROMPT,
-        max_tokens=1800,
-        min_tool_rounds=1,
-        followups=(
-            "Añade los recordatorios de logística",
-            "Hazme la oración de cierre",
-            "Dame una bienvenida más breve",
-        ),
-        examples=(
-            "Programa para una boda en el Salón del Reino",
-            "Presentación de un discursante visitante",
-            "Oración inicial para una reunión especial",
         ),
     ),
     # Va el último a propósito: es el más caro y el más lento, y no debe ser lo

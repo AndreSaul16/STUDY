@@ -30,7 +30,7 @@ from ..services.ai.research_service import (
     start_job,
     stream_job,
 )
-from .chat_router import _resolve_runtime
+from .chat_router import _resolve_research, _resolve_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,14 @@ async def start(chat_request: ChatRequest, request: Request):
 
     try:
         job = start_job(
-            service, runtime, messages, chat_request.mode, chat_request.conversation_id
+            service,
+            runtime,
+            messages,
+            chat_request.mode,
+            chat_request.conversation_id,
+            # Este endpoint ES la investigación profunda, así que internet se
+            # respeta tal como venga del cliente en vez de apagarse.
+            _resolve_research(chat_request, deep=True),
         )
     except JobLimitReached as exc:
         raise HTTPException(429, str(exc))

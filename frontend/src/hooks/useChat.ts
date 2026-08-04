@@ -5,14 +5,26 @@ import {
   buildRequestMessages,
   CHAT_STREAM_ENDPOINT,
 } from "@/services/chatClient";
-import { cancelJob, fetchSnapshot, followJob } from "@/services/researchClient";
-import { aiRequestBody, aiRequestHeaders } from "@/store/aiSettingsStore";
+import { fetchSnapshot, followJob } from "@/services/researchClient";
+import { AI_KEY_HEADER } from "@/services/aiSettingsClient";
+import { releaseTurn, stopTurn, trackTurn } from "@/services/chatTurns";
+import {
+  searchLocalLibrary,
+  toWire,
+  type LocalSnippetWire,
+} from "@/services/localLibrarySearch";
+import {
+  aiRequestBody,
+  localBooksForChat,
+  useAiSettingsStore,
+} from "@/store/aiSettingsStore";
 import { useChatStore } from "@/store/chatStore";
 import { useResearchStore } from "@/store/researchStore";
 import type {
   ChatMessageMeta,
   ChatSource,
   ChatUiMessage,
+  ConversationAi,
   ToolActivity,
 } from "@/types/chat";
 
@@ -104,38 +116,70 @@ async function errorDetail(response: Response): Promise<string> {
   return `HTTP ${response.status}: ${response.statusText}`;
 }
 
-// ─── El turno en curso ───────────────────────────────────────────
+// ─── Con qué responde cada conversación ──────────────────────────
 
 /**
- * El turno activo, a nivel de MÓDULO y no por instancia del hook.
+ * Cabeceras y cuerpo de UN turno, con el modelo de SU conversación.
  *
- * `ChatScreen` puede estar montado dos veces a la vez: en el split de
- * escritorio, la pantalla principal y la pestaña "Chat" del panel de
- * investigación son la misma pantalla. Con un `useRef` por instancia, el botón
- * de detener de una no sabía nada del stream que había abierto la otra, y el
- * turno seguía corriendo. El estado del turno vive en el store, que es único:
- * su cancelación tiene que serlo también.
+ * Mismas reglas que `aiRequestBody`/`aiRequestHeaders` —la key solo en la
+ * cabecera, el proveedor solo si hay key propia, el esfuerzo siempre— pero
+ * leyendo el proveedor, el modelo y el esfuerzo de la conversación en vez de
+ * los globales. Cada campo cae al ajuste global cuando la conversación no lo
+ * tiene, que es el caso de todas las anteriores a esta función.
+ *
+ * La key se busca aquí, por proveedor, y no se guarda en ningún sitio nuevo:
+ * mandar la key de OpenAI con `provider: "google"` porque el global iba por
+ * otro lado es exactamente el fallo que esto evita. `research` se toma de
+ * `aiRequestBody()` para no repetir su mapeo en dos ficheros.
  */
-interface ActiveTurn {
-  controller: AbortController;
-  /** Investigación profunda: hay que cancelarla también en el servidor. */
-  jobId: string | null;
-  /** Dónde se guarda la respuesta, pase lo que pase con la vista. */
-  conversationId: string;
+function turnAiConfig(ai: ConversationAi | null): {
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+} {
+  const { settings } = useAiSettingsStore.getState();
+  const { research } = aiRequestBody();
+
+  const provider = ai?.provider || settings.provider;
+  const apiKey = settings.byProvider[provider]?.apiKey ?? "";
+  const model = ai?.model || settings.byProvider[provider]?.model || "";
+  const effort = ai?.effort || settings.effort;
+
+  return {
+    headers: apiKey ? { [AI_KEY_HEADER]: apiKey } : {},
+    body: {
+      // En modo servidor el proveedor lo decide el servidor: mandarlo solo
+      // confundiría, igual que en `aiRequestBody`.
+      ...(apiKey && provider ? { provider } : {}),
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+      ...(research ? { research } : {}),
+    },
+  };
 }
 
-let activeTurn: ActiveTurn | null = null;
-
-/** Corta el turno en curso, en el cliente y —si es profundo— en el servidor. */
-function stopActiveTurn(): void {
-  const turn = activeTurn;
-  if (!turn) return;
-  activeTurn = null;
-  turn.controller.abort();
-  // El trabajo profundo vive en el backend: cerrar el SSE no lo para. Sin esta
-  // llamada, "Detener" dejaba al servidor quemando hasta cinco minutos de
-  // llamadas al modelo por una respuesta que ya nadie iba a leer.
-  if (turn.jobId) void cancelJob(turn.jobId);
+/**
+ * Fragmentos de los libros del usuario que vienen a cuento de la pregunta.
+ *
+ * La biblioteca .jwpub vive en IndexedDB y el agente corre en el servidor, así
+ * que la búsqueda se hace aquí y solo viajan los extractos (ver
+ * localLibrarySearch.ts). Sin libros marcados esto devuelve `[]` y la petición
+ * sale byte a byte igual que antes de que existiera la función.
+ *
+ * **Un fallo aquí no puede tumbar el turno.** Esto es un extra: una biblioteca
+ * corrupta, IndexedDB bloqueado en modo privado o una expresión regular que se
+ * atraganta tienen que acabar en una pregunta sin fragmentos, nunca en un chat
+ * que no responde. `searchLocalLibrary` ya captura lo suyo; el segundo
+ * `try/catch` cubre lo que pueda romperse antes de entrar en ella.
+ */
+async function localLibraryContext(question: string): Promise<LocalSnippetWire[]> {
+  try {
+    const symbols = localBooksForChat();
+    if (symbols.length === 0 || !question.trim()) return [];
+    return toWire(await searchLocalLibrary(question, symbols));
+  } catch (error) {
+    console.warn("[biblioteca] no se adjuntaron fragmentos locales:", error);
+    return [];
+  }
 }
 
 /**
@@ -169,7 +213,7 @@ export async function trackResearchJob(
     .start(jobId, conversationId, question, estimatedSeconds);
 
   const controller = new AbortController();
-  activeTurn = { controller, jobId, conversationId };
+  trackTurn(conversationId, controller, jobId);
 
   let answer = "";
   let meta: ChatMessageMeta | undefined;
@@ -181,7 +225,9 @@ export async function trackResearchJob(
     useResearchStore.getState().setError(message);
     // También en el chatStore: el banner de error de `ChatScreen` es lo único
     // que sigue en pantalla después de que la barra de progreso desaparezca.
-    useChatStore.getState().setError(message);
+    // Con el id de SU conversación: un informe que tarda minutos puede fallar
+    // cuando el usuario ya está leyendo otra pestaña.
+    useChatStore.getState().setError(message, conversationId);
     useChatStore.getState().abortTurn(answer, conversationId);
     useResearchStore.getState().finish();
   };
@@ -227,14 +273,14 @@ export async function trackResearchJob(
           break;
         case "sources":
           sources = parseSources(event.data.items);
-          useChatStore.getState().setPendingSources(sources);
+          useChatStore.getState().setPendingSources(sources, conversationId);
           // El backend emite las fuentes justo al terminar el plan: a partir
           // de aquí ya solo queda redactar.
           store.setWriting();
           break;
         case "token":
           answer += String(event.data.text ?? "");
-          useChatStore.getState().appendToken(answer);
+          useChatStore.getState().appendToken(answer, conversationId);
           break;
         case "metadata":
           meta = parseMeta(event.data);
@@ -248,7 +294,7 @@ export async function trackResearchJob(
           store.setError(message);
           // El `done` llega justo detrás y hace desaparecer la barra de
           // progreso: sin dejarlo también aquí, el usuario no vería nada.
-          useChatStore.getState().setError(message);
+          useChatStore.getState().setError(message, conversationId);
           break;
         }
         case "done":
@@ -271,11 +317,14 @@ export async function trackResearchJob(
     },
   });
 
-  if (activeTurn?.controller === controller) activeTurn = null;
+  releaseTurn(conversationId, controller);
 
   // Cancelado por el usuario: `followJob` vuelve en silencio y hay que cerrar
-  // el turno a mano, o el composer se queda bloqueado.
-  if (controller.signal.aborted && useChatStore.getState().isStreaming) {
+  // el turno a mano, o el composer se queda bloqueado. Se mira el estado de SU
+  // sesión y no el espejo `isStreaming`, que habla de la conversación que el
+  // usuario tenga delante y puede no ser esta.
+  const session = useChatStore.getState().sessions[conversationId];
+  if (controller.signal.aborted && session?.isStreaming) {
     useChatStore.getState().abortTurn(answer, conversationId);
     useResearchStore.getState().finish();
   }
@@ -300,8 +349,9 @@ export async function resumeResearchJob(
       .getState()
       .setError(
         "Esa investigación ya no está en el servidor. Puedes volver a lanzarla.",
+        conversationId,
       );
-    useChatStore.getState().abortTurn("");
+    useChatStore.getState().abortTurn("", conversationId);
     return;
   }
 
@@ -351,11 +401,17 @@ export function useChat(): UseChatReturn {
    * a insertar el mensaje del usuario (ya está guardado en SQLite).
    */
   const runTurn = useCallback(async (conversationId: string) => {
-    const requestMessages = buildRequestMessages(useChatStore.getState().messages);
-    const mode = useChatStore.getState().mode;
+    // Todo se lee de SU sesión, no de los espejos: si el usuario cambia de
+    // pestaña mientras esto arranca, los espejos ya hablan de otra
+    // conversación y el turno se iría con el historial y el modelo ajenos.
+    const store = useChatStore.getState();
+    const session = store.sessions[conversationId];
+    const requestMessages = buildRequestMessages(session?.messages ?? store.messages);
+    const mode = session?.mode ?? store.mode;
+    const ai = turnAiConfig(session?.ai ?? null);
 
     const controller = new AbortController();
-    activeTurn = { controller, jobId: null, conversationId };
+    trackTurn(conversationId, controller);
 
     let fullContent = "";
     let suggestions: string[] = [];
@@ -363,6 +419,14 @@ export function useChat(): UseChatReturn {
     let deepJob: { jobId: string; estimatedSeconds: number } | null = null;
 
     try {
+      // Antes del `fetch` y no en paralelo: el cuerpo tiene que salir ya con
+      // los fragmentos dentro. Es la última pregunta del usuario la que manda,
+      // no la conversación entera: buscar con el historial completo devolvería
+      // los fragmentos del tema de hace cinco turnos.
+      const pregunta =
+        [...requestMessages].reverse().find((m) => m.role === "user")?.content ?? "";
+      const localLibrary = await localLibraryContext(pregunta);
+
       const response = await fetch(CHAT_STREAM_ENDPOINT, {
         method: "POST",
         headers: {
@@ -371,13 +435,18 @@ export function useChat(): UseChatReturn {
           // La API key del usuario, si la hay. Solo aquí: nunca en el cuerpo
           // ni en la URL. Sin key configurada esto es `{}` y la petición sale
           // exactamente igual que antes de que existiera el modo BYOK.
-          ...aiRequestHeaders(),
+          ...ai.headers,
         },
         body: JSON.stringify({
           messages: requestMessages,
           mode,
           conversation_id: conversationId,
-          ...aiRequestBody(),
+          ...ai.body,
+          // Solo si hay algo: mandar `local_library: []` en todos los turnos
+          // ensuciaría el cuerpo de quien no usa la biblioteca y obligaría al
+          // backend a distinguir "sin libros" de "sin coincidencias", que para
+          // él son lo mismo.
+          ...(localLibrary.length > 0 ? { local_library: localLibrary } : {}),
         }),
         signal: controller.signal,
       });
@@ -414,20 +483,27 @@ export function useChat(): UseChatReturn {
             case "tool_call": {
               const name = String(parsed.data.name ?? "");
               if (!name) break;
-              chat.pushActivity({
-                name,
-                detail: describeArgs(parsed.data.arguments),
-              });
+              chat.pushActivity(
+                { name, detail: describeArgs(parsed.data.arguments) },
+                conversationId,
+              );
               break;
             }
             case "tool_result": {
               const name = String(parsed.data.name ?? "");
               if (!name) break;
-              chat.completeActivity(name, String(parsed.data.summary ?? ""));
+              chat.completeActivity(
+                name,
+                String(parsed.data.summary ?? ""),
+                conversationId,
+              );
               break;
             }
             case "sources":
-              chat.setPendingSources(parseSources(parsed.data.items));
+              chat.setPendingSources(
+                parseSources(parsed.data.items),
+                conversationId,
+              );
               break;
             case "suggestions":
               suggestions = parseStringList(parsed.data.items);
@@ -441,10 +517,13 @@ export function useChat(): UseChatReturn {
               break;
             case "token":
               fullContent += String(parsed.data.text ?? "");
-              chat.appendToken(fullContent);
+              chat.appendToken(fullContent, conversationId);
               break;
             case "error":
-              chat.setError(String(parsed.data.message ?? "Unknown error"));
+              chat.setError(
+                String(parsed.data.message ?? "Unknown error"),
+                conversationId,
+              );
               break;
             case "job": {
               // Modo profundo: el backend no responde con tokens sino con el
@@ -472,7 +551,7 @@ export function useChat(): UseChatReturn {
         // El turno sigue "abierto" (isStreaming) a propósito: lo que llega
         // ahora es el informe, y el composer debe seguir bloqueado.
         const question =
-          [...useChatStore.getState().messages]
+          [...(useChatStore.getState().sessions[conversationId]?.messages ?? [])]
             .reverse()
             .find((m) => m.role === "user")?.content ?? "";
         void trackResearchJob(
@@ -494,13 +573,13 @@ export function useChat(): UseChatReturn {
       } else {
         const message = err instanceof Error ? err.message : "Unknown error";
         const chat = useChatStore.getState();
-        chat.setError(message);
+        chat.setError(message, conversationId);
         chat.abortTurn(fullContent, conversationId);
       }
     } finally {
       // Solo si sigue siendo el nuestro: en modo profundo, `trackResearchJob`
       // ya lo ha sustituido por el suyo antes de llegar aquí.
-      if (activeTurn?.controller === controller) activeTurn = null;
+      releaseTurn(conversationId, controller);
     }
   }, []);
 
@@ -520,23 +599,32 @@ export function useChat(): UseChatReturn {
   );
 
   /**
-   * "Detener".
+   * "Detener" — solo el turno de la conversación que se está mirando.
    *
-   * En modo normal basta con abortar el `fetch`. En investigación profunda no:
-   * el turno de chat ya se cerró y lo que sigue corriendo es un trabajo en el
-   * servidor, que hay que cancelar allí. `stopActiveTurn` hace las dos cosas;
-   * el cierre del turno lo remata `trackResearchJob` al volver de `followJob`.
+   * En modo normal basta con abortar el `fetch`: su `catch` cierra el turno y
+   * guarda el parcial. En investigación profunda no, porque el turno de chat ya
+   * se cerró y lo que sigue corriendo es un trabajo en el servidor;
+   * `stopTurn` lo cancela también allí y aquí se remata el cierre para que el
+   * composer vuelva sin esperar a que `followJob` se entere.
    */
   const cancel = useCallback(() => {
-    const turn = activeTurn;
-    stopActiveTurn();
-    if (!turn?.jobId) return;
-    // El seguimiento profundo puede tardar un instante en enterarse y el
-    // composer tiene que volver ya. Con el id de SU conversación: el informe
-    // parcial no puede acabar en la que esté abierta.
     const chat = useChatStore.getState();
+    const conversationId = chat.conversationId;
+    if (!conversationId) return;
+
+    const turn = stopTurn(conversationId);
+
+    // Red de seguridad: la sesión se cree generando pero no hay ningún turno
+    // vivo detrás (un fallo que nadie llegó a cerrar). Antes la única salida
+    // era recargar la página, porque el composer se quedaba bloqueado.
+    if (!turn) {
+      if (chat.isStreaming) chat.abortTurn("", conversationId);
+      return;
+    }
+
+    if (!turn.jobId) return;
     if (chat.isStreaming) {
-      chat.abortTurn(chat.streamingContent, turn.conversationId);
+      chat.abortTurn(chat.streamingContent, conversationId);
     }
     useResearchStore.getState().finish();
   }, []);

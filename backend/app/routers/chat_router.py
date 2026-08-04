@@ -15,6 +15,7 @@ devuelve en ninguna respuesta.
 import json
 import logging
 import os
+from dataclasses import replace
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -33,6 +34,8 @@ from ..services.ai.chat_providers import (
     server_runtime,
 )
 from ..services.ai.chat_service import NO_KEY_MESSAGE, get_chat_service
+from ..services.ai.local_library import from_payload as local_snippets_from_payload
+from ..services.ai.research_config import ResearchConfig
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,24 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _resolve_research(chat_request: ChatRequest, deep: bool) -> ResearchConfig:
+    """
+    Ajustes de investigación de esta petición.
+
+    En el chat normal internet se apaga SIEMPRE, mande lo que mande el cliente:
+    una pregunta de treinta segundos no debe salir a consultar catálogos
+    científicos, ni por tiempo ni por coste. El resto de interruptores (filtro
+    doctrinal, avisos de fecha) sí se respetan en los dos modos, porque afectan
+    a cómo se trata lo que ya se ha encontrado.
+    """
+    config = ResearchConfig.from_payload(
+        chat_request.research.model_dump() if chat_request.research else None
+    )
+    if deep:
+        return config
+    return replace(config, internet=False)
 
 
 def _resolve_runtime(request: Request, chat_request: ChatRequest):
@@ -121,7 +142,21 @@ async def chat_stream(chat_request: ChatRequest, request: Request):
     # proxy cortaría el stream. Se responde con el id del trabajo y se cierra.
     # Un cliente antiguo ignora el evento `job` y ve un turno vacío, que es
     # exactamente lo que puede hacer con un modo que no conoce.
-    if get_mode(chat_request.mode).deep:
+    deep = get_mode(chat_request.mode).deep
+    research = _resolve_research(chat_request, deep)
+
+    # El schema ya recortó; esto vuelve a sanear (saltos de línea, campos que no
+    # son texto) y convierte al tipo del dominio. Se hace aquí y no en el
+    # servicio para que lo que cruce la frontera sea ya de fiar.
+    local_snippets = local_snippets_from_payload(
+        [s.model_dump() for s in chat_request.local_library]
+    )
+
+    if deep:
+        # La investigación profunda NO recibe los fragmentos locales: monta su
+        # propia cadena de prompts por subpregunta (research_service) y meterlos
+        # ahí es otro trabajo. Se ignoran en silencio en vez de fallar, que es lo
+        # que ya se hace con cualquier campo que un modo no usa.
         from ..services.ai.research_service import (
             JobLimitReached,
             estimated_seconds,
@@ -135,6 +170,7 @@ async def chat_stream(chat_request: ChatRequest, request: Request):
                 messages,
                 chat_request.mode,
                 chat_request.conversation_id,
+                research,
             )
         except JobLimitReached as exc:
             raise HTTPException(429, str(exc))
@@ -154,7 +190,11 @@ async def chat_stream(chat_request: ChatRequest, request: Request):
     async def event_generator():
         try:
             async for event in service.chat_stream(
-                messages, mode=chat_request.mode, runtime=runtime
+                messages,
+                mode=chat_request.mode,
+                runtime=runtime,
+                config=research,
+                local_snippets=local_snippets,
             ):
                 if await request.is_disconnected():
                     return

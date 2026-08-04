@@ -25,18 +25,27 @@ FAKE_SERVER_KEY = "sk-serverserverserverserverserver"
 
 
 class _ServicioFalso:
-    """Captura el runtime con el que se le llama. No toca la red."""
+    """Captura el runtime y la config con los que se le llama. No toca la red."""
 
     def __init__(self):
         self.mcp_tools = []
         self.tools = []
         self.ultimo_runtime = None
+        self.ultima_config = None
+        self.ultimos_fragmentos = None
 
     async def ensure_tools(self):
         return None
 
-    async def chat_stream(self, messages, mode=None, runtime=None):
+    def tools_for(self, config=None):
+        return self.tools
+
+    async def chat_stream(
+        self, messages, mode=None, runtime=None, config=None, local_snippets=None
+    ):
         self.ultimo_runtime = runtime
+        self.ultima_config = config
+        self.ultimos_fragmentos = local_snippets
         yield 'event: done\ndata: {"total_tokens": 0, "elapsed_ms": 0}\n\n'
 
 
@@ -196,3 +205,65 @@ class TestHealth:
 
         assert response.status_code == 200
         assert response.json()["has_server_key"] is False
+
+
+class TestBibliotecaLocal:
+    """
+    Los fragmentos .jwpub del usuario llegan al servicio ya saneados.
+
+    El router es la frontera: lo que cruce hacia el servicio tiene que ser del
+    tipo del dominio y estar recortado, porque a partir de ahí va directo al
+    prompt.
+    """
+
+    def test_sin_el_campo_el_servicio_recibe_una_lista_vacia(
+        self, client, servicio, monkeypatch
+    ):
+        # Compatibilidad: el `frontend/dist` desplegado no manda `local_library`.
+        monkeypatch.setenv("OPENAI_API_KEY", FAKE_SERVER_KEY)
+
+        assert _post(client).status_code == 200
+        assert servicio.ultimos_fragmentos == []
+
+    def test_los_fragmentos_llegan_convertidos_al_tipo_del_dominio(
+        self, client, servicio, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", FAKE_SERVER_KEY)
+
+        _post(
+            client,
+            {
+                "local_library": [
+                    {
+                        "symbol": "bt",
+                        "publication": "Damos testimonio",
+                        "document_title": "Capítulo 3",
+                        "text": "El aguante es necesario.",
+                        "document_id": 12,
+                    }
+                ]
+            },
+        )
+
+        fragmentos = servicio.ultimos_fragmentos
+        assert len(fragmentos) == 1
+        assert fragmentos[0].symbol == "bt"
+        assert fragmentos[0].document_id == 12
+
+    def test_un_cliente_abusivo_se_recorta_en_vez_de_dar_422(
+        self, client, servicio, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", FAKE_SERVER_KEY)
+
+        response = _post(
+            client,
+            {
+                "local_library": [
+                    {"symbol": "x", "text": "y" * 4000} for _ in range(30)
+                ]
+            },
+        )
+
+        assert response.status_code == 200
+        assert len(servicio.ultimos_fragmentos) == 6
+        assert all(len(f.text) <= 700 for f in servicio.ultimos_fragmentos)

@@ -8,11 +8,16 @@ import {
   IconBookmark,
   IconChat,
   IconLayers,
+  IconMic,
 } from "@/components/atoms/Icons";
 
 /**
- * DesktopRail — los mismos cuatro destinos que la barra inferior del móvil,
+ * DesktopRail — los mismos cinco destinos que la barra inferior del móvil,
  * en una columna de 68px a la izquierda.
+ *
+ * Tiene que llevar EXACTAMENTE los mismos destinos que `BottomNav`: si uno se
+ * añade solo aquí o solo allí, ese destino queda inalcanzable en la mitad de
+ * los tamaños de pantalla, que es justo el fallo que motivó este carril.
  *
  * Sin esto, a partir de 768px la app se quedaba sin navegación: `BottomNav`
  * es `md:hidden`, así que las vistas "biblia" y "más" no se podían alcanzar
@@ -29,6 +34,7 @@ interface RailItem {
 
 const ITEMS: RailItem[] = [
   { id: APP_VIEWS.CHAT, label: "Chat", icon: IconChat },
+  { id: APP_VIEWS.VOICE, label: "Voz", icon: IconMic },
   { id: APP_VIEWS.BIBLE, label: "Biblia", icon: IconBook },
   { id: APP_VIEWS.READ, label: "Leer", icon: IconBookmark },
   { id: APP_VIEWS.MORE, label: "Más", icon: IconLayers },

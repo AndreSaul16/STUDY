@@ -34,13 +34,14 @@ class TestGetMode:
 
 
 class TestModeSpecs:
-    def test_estan_los_seis_modos(self):
+    def test_estan_los_cinco_modos(self):
+        # "presentacion" se retiró a petición del usuario: no lo usaba y
+        # ocupaba un sitio en el selector, que en móvil es caro.
         assert set(CHAT_MODES) == {
             "analisis",
             "comentario",
             "ilustracion",
             "discurso",
-            "presentacion",
             "investigacion",
         }
 

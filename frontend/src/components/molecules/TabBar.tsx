@@ -11,6 +11,7 @@ interface TabBarProps {
 }
 
 const TABS: { id: ResearchTab; label: string }[] = [
+  { id: RESEARCH_TABS.READER, label: "Leer" },
   { id: RESEARCH_TABS.BIBLE, label: "Biblia" },
   { id: RESEARCH_TABS.SEARCH, label: "Buscar" },
   { id: RESEARCH_TABS.REFERENCE, label: "Referencia" },
@@ -32,6 +33,7 @@ const TABS: { id: ResearchTab; label: string }[] = [
  * "chat" o "notes" sin dejar el panel en blanco.
  */
 const PRIMARY_TABS: ResearchTab[] = [
+  RESEARCH_TABS.READER,
   RESEARCH_TABS.BIBLE,
   RESEARCH_TABS.SEARCH,
   RESEARCH_TABS.REFERENCE,

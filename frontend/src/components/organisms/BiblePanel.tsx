@@ -4,7 +4,8 @@ import { fetchBooks, type BibleBook } from "@/services/bibleClient";
 import { openBibleChapter } from "@/services/readerActions";
 import { useReaderStore } from "@/store/readerStore";
 import { useUIStore } from "@/store/uiStore";
-import { IconArrowLeft, IconSearch } from "@/components/atoms/Icons";
+import { IconArrowLeft, IconLayers, IconSearch } from "@/components/atoms/Icons";
+import { NoticeSheet } from "@/components/molecules/NoticeSheet";
 
 interface BiblePanelProps {
   className?: string;
@@ -23,6 +24,7 @@ export function BiblePanel({ className }: BiblePanelProps) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<BibleBook | null>(null);
+  const [avisoCotejo, setAvisoCotejo] = useState(false);
 
   const source = useReaderStore((s) => s.source);
   const setMobileSheetOpen = useUIStore((s) => s.setMobileSheetOpen);
@@ -101,6 +103,31 @@ export function BiblePanel({ className }: BiblePanelProps) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 pb-4">
+          {/* Antes de la rejilla y no después: Salmos tiene 150 capítulos y al
+              final del scroll esto no lo encontraría nadie. */}
+          <button
+            onClick={() => setAvisoCotejo(true)}
+            className={cn(
+              "mb-3 flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3",
+              "border border-dashed border-seam-light text-left",
+              "transition-colors duration-200 ease-[var(--ease-out-expo)]",
+              "hover:border-amber-600 dark:border-seam-dark dark:hover:border-amber-600",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500",
+            )}
+          >
+            <IconLayers
+              width={15}
+              height={15}
+              className="shrink-0 text-amber-700 dark:text-amber-400"
+            />
+            <span className="min-w-0 flex-1 font-ui text-xs text-reading-light dark:text-reading-dark">
+              Comparar traducciones
+            </span>
+            <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 font-ui text-[10px] font-medium uppercase tracking-[0.12em] text-amber-800 dark:bg-amber-800/30 dark:text-amber-300">
+              Próximamente
+            </span>
+          </button>
+
           {/* Rejilla fluida: más columnas cuanto más ancho, celdas de 44px
               mínimo para que se puedan pulsar con el dedo. */}
           <div className="grid grid-cols-[repeat(auto-fill,minmax(44px,1fr))] gap-1.5">
@@ -124,6 +151,12 @@ export function BiblePanel({ className }: BiblePanelProps) {
             )}
           </div>
         </div>
+
+        <AvisoCotejo
+          open={avisoCotejo}
+          onClose={() => setAvisoCotejo(false)}
+          libro={selected.name}
+        />
       </div>
     );
   }
@@ -213,6 +246,61 @@ export function BiblePanel({ className }: BiblePanelProps) {
           })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Aviso del cotejo de traducciones.
+ *
+ * Lo que falta es SOLO la pantalla: el servidor ya sirve los tres textos y está
+ * probado. Por eso el aviso enumera las traducciones concretas y dice también
+ * por qué no estarán las modernas —son de editorial, no de dominio público—,
+ * que es la primera pregunta que se hace cualquiera al leer «1909».
+ */
+function AvisoCotejo({
+  open,
+  onClose,
+  libro,
+}: {
+  open: boolean;
+  onClose: () => void;
+  libro: string;
+}) {
+  return (
+    <NoticeSheet
+      open={open}
+      onClose={onClose}
+      tone="soon"
+      title="Comparar traducciones"
+      icon={IconLayers}
+      lead={
+        <>
+          Falta la pantalla que las ponga en paralelo. El servidor ya sirve los
+          textos y los tiene probados; lo que no existe todavía es la forma de
+          verlos uno al lado del otro en {libro} ni en ningún otro libro.
+        </>
+      }
+      bullets={[
+        "Ver un versículo en varias traducciones a la vez, en columnas.",
+        "Reina-Valera de 1909, la base de la 1960, con toda la Biblia.",
+        "Sagradas Escrituras de 1569, la primera Biblia completa en español.",
+        "Reina-Valera de 1858, solo las Escrituras Griegas.",
+        "No estarán la Reina-Valera 1960 ni la Nueva Versión Internacional: son de sus editoriales y no hay forma legal de servirlas.",
+      ]}
+      available={{
+        title: "Lo que ya se puede hacer",
+        body: (
+          <>
+            Los textos ya están disponibles en el servidor:{" "}
+            <code className="font-mono text-[11px]">
+              /api/references/compare
+            </code>{" "}
+            devuelve un versículo en las tres traducciones. Y desde este índice
+            ya puedes abrir cualquier capítulo en el lector.
+          </>
+        ),
+      }}
+    />
   );
 }
 

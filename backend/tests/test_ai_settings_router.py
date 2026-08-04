@@ -60,12 +60,12 @@ class TestProviders:
     def test_se_pinta_sin_key_ninguna(self, client, monkeypatch):
         # El selector de proveedor tiene que existir ANTES de que el usuario
         # tenga nada configurado.
-        for var in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        for var in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "MINIMAX_API_KEY"):
             monkeypatch.delenv(var, raising=False)
 
         payload = client.get("/api/ai/providers").json()
 
-        assert [p["id"] for p in payload["providers"]] == ["openai", "google"]
+        assert [p["id"] for p in payload["providers"]] == ["openai", "google", "minimax"]
         assert payload["server"]["has_server_key"] is False
 
     def test_cada_proveedor_trae_sus_cinco_escalones_de_esfuerzo(self, client):

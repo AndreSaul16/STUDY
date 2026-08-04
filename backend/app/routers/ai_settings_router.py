@@ -69,6 +69,11 @@ async def providers() -> ProvidersResponse:
                 supports_images=spec.supports_images,
                 supports_deep_research=spec.supports_deep_research,
                 image_models=list(spec.image_models),
+                supports_stt=spec.supports_stt,
+                supports_tts=spec.supports_tts,
+                stt_models=list(spec.stt_models),
+                tts_models=list(spec.tts_models),
+                tts_voices=list(spec.tts_voices),
             )
             for spec in PROVIDERS.values()
         ],

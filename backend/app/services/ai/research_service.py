@@ -41,8 +41,10 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from .chat_modes import ModeSpec, get_mode
-from .chat_providers import ChatRuntime, tool_choice_for
+from .chat_providers import ChatRuntime, ReasoningStripper, tool_choice_for
+from .doctrinal_filter import counter_directive
 from .redaction import redact
+from .research_config import ResearchConfig
 from .research_policy import (
     budget_exhausted,
     executed_tool_names,
@@ -155,6 +157,22 @@ def estimated_seconds(plan_size: int = _MAX_PLAN_ITEMS) -> int:
     return max(60, min(plan_size * 40, RESEARCH_BUDGET_SECONDS))
 
 
+def _conflict_topics(parsed: Any) -> List[str]:
+    """
+    Temas doctrinales a contrastar que trae el resultado de una herramienta.
+
+    Solo ``buscar_en_internet`` los emite (``temas_a_contrastar``). Se lee de
+    ahí en vez de volver a analizar los textos: el filtro ya hizo ese trabajo y
+    repetirlo aquí sería tener dos criterios distintos para lo mismo.
+    """
+    if not isinstance(parsed, dict):
+        return []
+    raw = parsed.get("temas_a_contrastar")
+    if not isinstance(raw, list):
+        return []
+    return [str(t) for t in raw if isinstance(t, str) and t]
+
+
 # ─── Trabajos ────────────────────────────────────────────────────
 
 
@@ -182,6 +200,7 @@ class ResearchJob:
     question: str
     mode_id: str
     conversation_id: Optional[str] = None
+    config: ResearchConfig = field(default_factory=ResearchConfig)
     created_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
     cancelled: bool = False
@@ -267,7 +286,11 @@ class ResearchRegistry:
         return sum(1 for job in self._jobs.values() if not job.finished)
 
     def create(
-        self, question: str, mode_id: str, conversation_id: Optional[str] = None
+        self,
+        question: str,
+        mode_id: str,
+        conversation_id: Optional[str] = None,
+        config: Optional[ResearchConfig] = None,
     ) -> ResearchJob:
         self.purge()
         if self.live_count() >= RESEARCH_MAX_LIVE_JOBS:
@@ -279,6 +302,7 @@ class ResearchRegistry:
             question=question,
             mode_id=mode_id,
             conversation_id=conversation_id,
+            config=config or ResearchConfig(),
         )
         self._jobs[job.job_id] = job
         return job
@@ -355,8 +379,14 @@ async def run_research(
 
         from .chat_service import build_system_prompt  # evita el import circular
 
+        settings = job.config
+        tools = service.tools_for(settings)
+
         full_messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": build_system_prompt(mode_spec)}
+            {
+                "role": "system",
+                "content": build_system_prompt(mode_spec, settings.internet),
+            }
         ] + list(messages)
 
         # ── 1. PLAN ──────────────────────────────────────────────
@@ -388,6 +418,9 @@ async def run_research(
         docs_read = 0
         rounds = 0
         gaps: List[str] = []
+        # Temas de fuera de jw.org que han salido marcados y que hay que
+        # responder con la Biblia antes de redactar (ver doctrinal_filter).
+        pendiente_contraste: List[str] = []
 
         # Reparto POR SUB-PREGUNTA y no un bote común. Con un solo contador
         # global, la primera sub-pregunta se comía todas las rondas y las demás
@@ -436,7 +469,7 @@ async def run_research(
                     response = await runtime.client.chat.completions.create(
                         model=runtime.model,
                         messages=full_messages,
-                        tools=service.tools,
+                        tools=tools,
                         tool_choice=tool_choice_for(runtime.provider, force),
                         max_completion_tokens=2000,
                         **runtime.tool_params,
@@ -484,7 +517,9 @@ async def run_research(
                                 {"error": "límite de documentos alcanzado"}
                             )
                         else:
-                            content = await service._run_tool(name, args)
+                            content = await service._run_tool(
+                                name, args, settings
+                            )
                             docs_read += 1
                         tool_cache[key] = content
 
@@ -493,6 +528,7 @@ async def run_research(
                     except (json.JSONDecodeError, TypeError):
                         parsed = {}
                     tracker.record(name, args, parsed)
+                    pendiente_contraste.extend(_conflict_topics(parsed))
 
                     full_messages.append(
                         {
@@ -528,6 +564,14 @@ async def run_research(
         if pendiente:
             full_messages.append({"role": "system", "content": pendiente})
 
+        # Y el recordatorio de nivel de turno de lo que hay que contrastar. Va
+        # aquí, justo antes de redactar, porque es cuando importa: durante la
+        # investigación el aviso ya viajaba pegado a cada resultado.
+        if settings.doctrinal_filter and pendiente_contraste:
+            directiva = counter_directive(pendiente_contraste)
+            if directiva:
+                full_messages.append({"role": "system", "content": directiva})
+
         # ── 4. SÍNTESIS ──────────────────────────────────────────
         full_messages.append(
             {
@@ -539,6 +583,7 @@ async def run_research(
         )
 
         answer = ""
+        limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
         try:
             stream = await runtime.client.chat.completions.create(
                 model=runtime.model,
@@ -552,18 +597,24 @@ async def run_research(
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
-                if delta.content:
-                    answer += delta.content
+                visible = limpiador.feed(delta.content or "")
+                if visible:
+                    answer += visible
                     # El informe se va guardando en el trabajo según se
                     # escribe, no solo al final: la instantánea de
                     # ``GET /api/research/{id}`` se anuncia como respaldo del
                     # SSE y devolvía la respuesta vacía durante toda la
                     # redacción, que es justo cuando hay algo que rescatar.
                     job.answer = answer
-                    job.append("token", {"text": delta.content})
+                    job.append("token", {"text": visible})
         except Exception as exc:
             logger.error("Síntesis fallida: %s", redact(exc))
             job.append("error", {"message": "Error al redactar el informe"})
+
+        cola = limpiador.flush()
+        if cola:
+            answer += cola
+            job.append("token", {"text": cola})
 
         job.answer = answer
         job.append(
@@ -610,6 +661,7 @@ def start_job(
     messages: List[Dict[str, Any]],
     mode: Optional[str],
     conversation_id: Optional[str] = None,
+    config: Optional[ResearchConfig] = None,
 ) -> ResearchJob:
     """Crea el trabajo y lanza su tarea. Puede lanzar ``JobLimitReached``."""
     question = ""
@@ -618,7 +670,9 @@ def start_job(
             question = str(message.get("content") or "")
             break
 
-    job = get_registry().create(question, get_mode(mode).id, conversation_id)
+    job = get_registry().create(
+        question, get_mode(mode).id, conversation_id, config
+    )
     job.task = asyncio.create_task(run_research(job, service, runtime, messages, mode))
     return job
 

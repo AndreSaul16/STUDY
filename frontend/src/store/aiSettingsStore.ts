@@ -29,12 +29,15 @@ import {
   DEFAULT_AI_PROVIDER,
   FALLBACK_AI_PROVIDERS,
   FALLBACK_AI_SERVER,
+  defaultResearchSettings,
   emptyAiSettings,
+  resolveVoiceProvider,
   type AiModel,
   type AiProvider,
   type AiServerDefaults,
   type AiSettings,
   type ImageQuality,
+  type ResearchSettings,
 } from "@/types/aiSettings";
 
 type KeyStatus = "idle" | "checking" | "ok" | "invalid";
@@ -72,6 +75,13 @@ function readSettings(): AiSettings {
         s.researchProvider === "openai" || s.researchProvider === "google"
           ? s.researchProvider
           : "propio",
+      research: readResearch(s.research),
+      localBooks: readLocalBooks(s.localBooks),
+      voiceProvider: typeof s.voiceProvider === "string" ? s.voiceProvider : "",
+      voiceMode: typeof s.voiceMode === "string" ? s.voiceMode : "",
+      sttModel: typeof s.sttModel === "string" ? s.sttModel : "",
+      ttsVoice: typeof s.ttsVoice === "string" ? s.ttsVoice : "",
+      speakBack: s.speakBack === true,
     };
   } catch {
     return base;
@@ -80,6 +90,43 @@ function readSettings(): AiSettings {
 
 function isQuality(value: unknown): value is ImageQuality {
   return value === "low" || value === "medium" || value === "high";
+}
+
+/**
+ * Ajustes de investigación guardados, campo a campo.
+ *
+ * Cada uno cae al default por separado en vez de descartar el objeto entero
+ * ante un campo raro: al subir de la versión 1 a la 2 el objeto no existía, y
+ * quien tuviera algo guardado se quedaría sin la mitad de sus preferencias por
+ * una clave nueva.
+ */
+function readResearch(raw: unknown): ResearchSettings {
+  const base = defaultResearchSettings();
+  if (!raw || typeof raw !== "object") return base;
+  const r = raw as Record<string, unknown>;
+
+  const minYear =
+    typeof r.minYear === "number" && Number.isFinite(r.minYear)
+      ? Math.trunc(r.minYear)
+      : null;
+
+  return {
+    internet: typeof r.internet === "boolean" ? r.internet : base.internet,
+    minYear,
+  };
+}
+
+/**
+ * Los símbolos de los libros autorizados, saneados.
+ *
+ * Se filtra a cadenas no vacías en vez de confiar en lo guardado: esto acaba
+ * decidiendo qué contenido del usuario sale de su dispositivo, y un `null`
+ * colado en el array haría que la búsqueda pidiera a IndexedDB una clave que no
+ * existe. Ante la duda, mejor un libro de menos que un error en el envío.
+ */
+function readLocalBooks(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is string => typeof s === "string" && s.trim() !== "");
 }
 
 function writeSettings(settings: AiSettings): void {
@@ -108,6 +155,14 @@ interface AiSettingsState {
   setEffort: (effort: string) => void;
   setImageModel: (model: string) => void;
   setImageQuality: (quality: ImageQuality) => void;
+  setResearch: (patch: Partial<ResearchSettings>) => void;
+  /** Marca o desmarca una publicación .jwpub para el chat. */
+  toggleLocalBook: (symbol: string) => void;
+  setVoiceProvider: (provider: string) => void;
+  setVoiceMode: (mode: string) => void;
+  setSttModel: (model: string) => void;
+  setTtsVoice: (voice: string) => void;
+  setSpeakBack: (speak: boolean) => void;
   refreshModels: (purpose?: "chat" | "image" | "research") => Promise<void>;
   clearKey: () => void;
 }
@@ -184,6 +239,34 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   setImageQuality: (imageQuality) =>
     persist(set, { ...get().settings, imageQuality }),
 
+  setResearch: (patch) => {
+    const { settings } = get();
+    persist(set, { ...settings, research: { ...settings.research, ...patch } });
+  },
+
+  toggleLocalBook: (symbol) => {
+    const { settings } = get();
+    const marcados = settings.localBooks.includes(symbol)
+      ? settings.localBooks.filter((s) => s !== symbol)
+      : [...settings.localBooks, symbol];
+    persist(set, { ...settings, localBooks: marcados });
+  },
+
+  setVoiceProvider: (voiceProvider) => {
+    // El modelo de STT es de OTRO proveedor: conservarlo mandaría "whisper-1"
+    // a un proveedor que no lo tiene y el backend lo degradaría en silencio.
+    // Mejor vaciarlo y que cada uno use su default.
+    persist(set, { ...get().settings, voiceProvider, sttModel: "", ttsVoice: "" });
+  },
+
+  setVoiceMode: (voiceMode) => persist(set, { ...get().settings, voiceMode }),
+
+  setSttModel: (sttModel) => persist(set, { ...get().settings, sttModel }),
+
+  setTtsVoice: (ttsVoice) => persist(set, { ...get().settings, ttsVoice }),
+
+  setSpeakBack: (speakBack) => persist(set, { ...get().settings, speakBack }),
+
   refreshModels: async (purpose = "chat") => {
     const { settings } = get();
     const apiKey = settings.byProvider[settings.provider]?.apiKey ?? "";
@@ -233,6 +316,17 @@ export function currentApiKey(): string {
   return settings.byProvider[settings.provider]?.apiKey ?? "";
 }
 
+/**
+ * Los símbolos .jwpub que el usuario ha autorizado para el chat.
+ *
+ * Getter con nombre y no un acceso suelto al store: es el único punto desde el
+ * que se decide qué biblioteca del usuario sale de su dispositivo, y conviene
+ * que se vea en el grep.
+ */
+export function localBooksForChat(): string[] {
+  return useAiSettingsStore.getState().settings.localBooks;
+}
+
 /** El modelo elegido para el proveedor activo, o cadena vacía. */
 export function currentModel(): string {
   const { settings } = useAiSettingsStore.getState();
@@ -247,6 +341,35 @@ export function currentModel(): string {
  */
 export function aiRequestHeaders(): Record<string, string> {
   const apiKey = currentApiKey();
+  return apiKey ? { [AI_KEY_HEADER]: apiKey } : {};
+}
+
+/**
+ * El proveedor de voz que se va a usar de verdad, ya resuelto.
+ *
+ * Devuelve `undefined` cuando NINGÚN proveedor tiene voz verificada: la
+ * pantalla lo usa para explicar por qué no puede grabar en vez de ofrecer un
+ * botón que daría 400.
+ */
+export function currentVoiceProvider() {
+  const { settings, providers } = useAiSettingsStore.getState();
+  return resolveVoiceProvider(providers, settings.voiceProvider);
+}
+
+/**
+ * Cabeceras de una petición de voz.
+ *
+ * NO se puede reutilizar `aiRequestHeaders()`: esa devuelve la key del
+ * proveedor de CHAT, y el de voz puede ser otro (chat en Gemini, voz en
+ * OpenAI, que es la combinación más probable hoy). Mandar la key de Gemini a
+ * OpenAI daría un 401 desconcertante.
+ */
+export function voiceRequestHeaders(): Record<string, string> {
+  const provider = currentVoiceProvider();
+  if (!provider) return {};
+
+  const { settings } = useAiSettingsStore.getState();
+  const apiKey = settings.byProvider[provider.id]?.apiKey ?? "";
   return apiKey ? { [AI_KEY_HEADER]: apiKey } : {};
 }
 
@@ -266,9 +389,11 @@ export function aiRequestBody(): {
   provider?: string;
   model?: string;
   effort?: string;
+  research?: { internet: boolean; min_year: number | null };
 } {
   const { settings } = useAiSettingsStore.getState();
   const model = currentModel();
+  const r = settings.research;
 
   return {
     ...(currentApiKey() && settings.provider
@@ -276,6 +401,11 @@ export function aiRequestBody(): {
       : {}),
     ...(model ? { model } : {}),
     ...(settings.effort ? { effort: settings.effort } : {}),
+    // Va SIEMPRE, no solo cuando difiere del default. El backend tiene sus
+    // propios valores por defecto y si no mandamos nada gana el suyo; con
+    // interruptores que el usuario puede APAGAR, "no mandar nada" significaría
+    // que apagarlos no hace nada — que es justo el bug que tuvo el esfuerzo.
+    research: { internet: r.internet, min_year: r.minYear },
   };
 }
 

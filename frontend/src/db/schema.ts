@@ -110,6 +110,11 @@ CREATE TABLE IF NOT EXISTS conversations (
     title           TEXT NOT NULL DEFAULT 'Conversación nueva',
     mode            TEXT NOT NULL DEFAULT 'analisis',
     pinned          INTEGER NOT NULL DEFAULT 0,
+    -- v5: con qué responde ESTA conversación. NULL = usa el ajuste global.
+    -- Nunca la API key: la base se exporta como copia de seguridad.
+    provider        TEXT,
+    model           TEXT,
+    effort          TEXT,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
@@ -172,7 +177,37 @@ CREATE TABLE IF NOT EXISTS schema_version (
 INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 INSERT OR IGNORE INTO schema_version (version) VALUES (3);
 INSERT OR IGNORE INTO schema_version (version) VALUES (4);
+INSERT OR IGNORE INTO schema_version (version) VALUES (5);
 `;
+
+/**
+ * Migración a la v5 — el modelo de cada conversación.
+ *
+ * Va como lista de ALTER y no dentro de un bloque SQL porque las tres columnas
+ * se añaden a una tabla que YA existe en el dispositivo de cualquiera que haya
+ * usado el chat: `CREATE TABLE IF NOT EXISTS` no las añadiría, y SQLite no
+ * tiene `ADD COLUMN IF NOT EXISTS`. Cada una se aplica solo si falta, con la
+ * misma guarda de `PRAGMA table_info` que usa `migrateImageTables` para
+ * `meta_json`.
+ *
+ * Quién la ejecuta es lo llamativo: `conversationsRepository`, no `database.ts`
+ * como el resto. El repositorio es el único que toca esta tabla y así la
+ * migración viaja pegada al código que necesita las columnas, incluida la ruta
+ * de restaurar una copia de seguridad vieja (`importDatabase`), donde una base
+ * de hace meses vuelve a entrar en juego con el esquema de entonces.
+ *
+ * Todas nullable a propósito: NULL significa «esta conversación usa el ajuste
+ * global», que es exactamente lo que debe pasarle a las conversaciones que ya
+ * existían.
+ */
+export const CONVERSATION_AI_COLUMNS: ReadonlyArray<{
+  name: string;
+  sql: string;
+}> = [
+  { name: "provider", sql: "ALTER TABLE conversations ADD COLUMN provider TEXT" },
+  { name: "model", sql: "ALTER TABLE conversations ADD COLUMN model TEXT" },
+  { name: "effort", sql: "ALTER TABLE conversations ADD COLUMN effort TEXT" },
+];
 
 /**
  * Migración a la v3 — tablas del chat.
@@ -189,6 +224,12 @@ CREATE TABLE IF NOT EXISTS conversations (
     title           TEXT NOT NULL DEFAULT 'Conversación nueva',
     mode            TEXT NOT NULL DEFAULT 'analisis',
     pinned          INTEGER NOT NULL DEFAULT 0,
+    -- Ver CONVERSATION_AI_COLUMNS: aquí solo sirven para la base que estrena
+    -- las tablas del chat. En las que ya las tienen, este CREATE no hace nada
+    -- y las columnas las añade la migración del repositorio.
+    provider        TEXT,
+    model           TEXT,
+    effort          TEXT,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );

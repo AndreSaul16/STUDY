@@ -22,14 +22,26 @@ from .chat_modes import ModeSpec
 # puede entrecomillar la expresión clave, que es el gancho de la voz del usuario.
 SCRIPTURE_TOOLS = frozenset({"leer_pasaje_biblico", "get_verse_with_study", "get_bible_verse"})
 
-# Herramientas que devuelven el cuerpo de un artículo (no un fragmento).
+# Herramientas que devuelven el cuerpo de un documento (no un fragmento). La
+# transcripción de un vídeo cuenta: es contenido completo y citable, igual que
+# el texto de un artículo.
 DOCUMENT_TOOLS = frozenset(
-    {"abrir_documento", "getWatchtowerContent", "getWorkbookContent"}
+    {"abrir_documento", "abrir_video", "getWatchtowerContent", "getWorkbookContent"}
 )
 
 SEARCH_TOOLS = frozenset(
-    {"buscar_en_biblioteca", "getWatchtowerLinks", "getWorkbookLinks", "search_bible_books"}
+    {
+        "buscar_en_biblioteca",
+        "buscar_en_jw_org",
+        "getWatchtowerLinks",
+        "getWorkbookLinks",
+        "search_bible_books",
+    }
 )
+
+# Herramientas que traen material de FUERA de jw.org. Nunca bastan por sí
+# solas: un informe sostenido solo en un paper no es lo que pide esta app.
+EXTERNAL_TOOLS = frozenset({"buscar_en_internet"})
 
 # Modos cuya pieza exige el texto bíblico literal delante.
 _MODES_THAT_NEED_SCRIPTURE = frozenset({"comentario", "ilustracion", "discurso"})
@@ -48,6 +60,20 @@ _GAP_SEARCH_WITHOUT_DOCUMENT = (
 _GAP_NO_SCRIPTURE = (
     "Necesitas el texto bíblico literal para poder entrecomillar la expresión "
     "clave. Léelo con leer_pasaje_biblico."
+)
+
+_GAP_ONLY_ONE_CATALOG = (
+    "Has buscado solo en la Biblioteca en Línea y no has abierto nada. Te falta "
+    "el otro catálogo: llama a buscar_en_jw_org, que indexa además los VÍDEOS "
+    "de JW Broadcasting, y ábrelos con abrir_video para leer su transcripción. "
+    "Si la Biblioteca no devolvió resultados, prueba también con menos palabras "
+    "o con el tema en vez de con la cita."
+)
+
+_GAP_ONLY_EXTERNAL = (
+    "Lo único que has consultado viene de fuera de jw.org. Eso no basta nunca: "
+    "el dato externo sirve para ilustrar, no para enseñar. Busca en las "
+    "publicaciones y en la Biblia antes de redactar."
 )
 
 
@@ -84,7 +110,21 @@ def research_gap(executed: Iterable[str], mode: ModeSpec) -> Optional[str]:
     if not names:
         return _GAP_NO_TOOLS
 
+    # Se comprueba antes que nada lo demás: con solo fuentes externas no hay
+    # ni artículo que abrir ni pasaje que leer, así que las otras dos brechas
+    # también saltarían, pero dirían algo menos útil que el motivo real.
+    if names <= EXTERNAL_TOOLS:
+        return _GAP_ONLY_EXTERNAL
+
     if names & SEARCH_TOOLS and not names & DOCUMENT_TOOLS:
+        # Aquí se bifurca según SI SE MIRÓ EN LOS DOS CATÁLOGOS, y no es un
+        # detalle: el caso real que se rompía era el agente buscando cuatro
+        # veces en la Biblioteca, recibiendo cero cada vez y rindiéndose sin
+        # haber tocado jw.org ni un vídeo. Decirle "abre el documento más
+        # relevante" en esa situación es inútil —no había ninguno que abrir—,
+        # así que se le manda al otro catálogo, que es donde puede haber algo.
+        if "buscar_en_jw_org" not in names:
+            return _GAP_ONLY_ONE_CATALOG
         return _GAP_SEARCH_WITHOUT_DOCUMENT
 
     if mode.id in _MODES_THAT_NEED_SCRIPTURE and not names & SCRIPTURE_TOOLS:

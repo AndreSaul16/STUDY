@@ -118,6 +118,15 @@ export const RESEARCH_TABS = {
   BIBLE: "bible",
   SEARCH: "search",
   LIBRARY: "library",
+  /**
+   * El lector, dentro del propio panel.
+   *
+   * Existe para que abrir un libro NO te eche del chat: antes, poner un
+   * artículo en `readerStore` cambiaba la vista entera a "leer" y la
+   * conversación desaparecía. Con esta pestaña se lee al lado de lo que se
+   * está preguntando, que es como se estudia de verdad.
+   */
+  READER: "reader",
   REFERENCE: "reference",
   ANNOTATIONS: "annotations",
   FAVORITES: "favorites",
@@ -139,6 +148,14 @@ export type ResearchTab = (typeof RESEARCH_TABS)[keyof typeof RESEARCH_TABS];
  */
 export const APP_VIEWS = {
   CHAT: "chat",
+  /**
+   * Practicar hablando: se graba un ensayo y la IA lo escucha y lo critica.
+   *
+   * Destino de primer nivel y no una pestaña del panel porque se usa DE PIE,
+   * con el móvil en la mano y ensayando en voz alta. Enterrarlo a dos toques
+   * dentro de "Más" sería pedirle a alguien que está de pie que navegue.
+   */
+  VOICE: "voice",
   READ: "read",
   BIBLE: "bible",
   MORE: "more",

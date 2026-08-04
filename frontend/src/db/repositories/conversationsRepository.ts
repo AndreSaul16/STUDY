@@ -9,14 +9,32 @@
  * searchRepository.ts, que ya usa este mismo fallback).
  */
 
-import { queryAll, queryOne, execute, executeTransaction } from "@/db/database";
-import type { ChatMessageMeta, ChatSource, ToolActivity } from "@/types/chat";
+import {
+  queryAll,
+  queryOne,
+  execute,
+  executeTransaction,
+  getDatabase,
+} from "@/db/database";
+import { CONVERSATION_AI_COLUMNS } from "@/db/schema";
+import type {
+  ChatMessageMeta,
+  ChatSource,
+  ConversationAi,
+  ToolActivity,
+} from "@/types/chat";
 
 export interface ConversationRow {
   conversationId: string;
   title: string;
   mode: string;
   pinned: boolean;
+  /**
+   * Con qué responde esta conversación (columnas v5). Los tres a `null` en las
+   * conversaciones creadas antes de que esto existiera: significan «usa el
+   * ajuste global» y así siguen abriéndose sin tocar nada.
+   */
+  ai: ConversationAi;
   createdAt: number;
   updatedAt: number;
 }
@@ -44,6 +62,10 @@ interface RawConversation {
   title: string;
   mode: string;
   pinned: number;
+  /** Opcionales: una base sin migrar todavía no trae estas columnas. */
+  provider?: string | null;
+  model?: string | null;
+  effort?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -81,9 +103,53 @@ function toConversation(row: RawConversation): ConversationRow {
     title: row.title,
     mode: row.mode,
     pinned: row.pinned === 1,
+    // Cadena vacía → null: en la base «sin modelo» y «modelo por defecto» son
+    // lo mismo, y arrastrar el "" hasta la petición mandaría un modelo vacío.
+    ai: {
+      provider: row.provider || null,
+      model: row.model || null,
+      effort: row.effort || null,
+    },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+// ─── Migración v5, en el repositorio ─────────────────────────────
+
+/**
+ * La base sobre la que ya se comprobaron las columnas del modelo.
+ *
+ * Se guarda la INSTANCIA y no un booleano porque `importDatabase` sustituye el
+ * objeto entero al restaurar una copia de seguridad: con una bandera, la base
+ * recién importada —que puede ser de hace meses— se daría por migrada y el
+ * primer `UPDATE ... SET provider` reventaría con «no such column».
+ */
+let aiColumnsCheckedOn: ReturnType<typeof getDatabase> | null = null;
+
+/**
+ * Añade las columnas `provider`/`model`/`effort` si faltan.
+ *
+ * Con `exec` directo y no con `execute()` porque es DDL y sigue el mismo camino
+ * que las migraciones de `database.ts`, que es el que está probado contra
+ * sql.js. Se llama al principio de todo lo que lee o escribe la tabla: después
+ * de la primera vez cuesta una comparación de punteros.
+ */
+function ensureConversationAiColumns(): void {
+  const database = getDatabase();
+  if (aiColumnsCheckedOn === database) return;
+
+  const existing = new Set(
+    (database.exec("PRAGMA table_info(conversations)")[0]?.values ?? []).map(
+      (column) => String(column[1]),
+    ),
+  );
+  for (const column of CONVERSATION_AI_COLUMNS) {
+    if (!existing.has(column.name)) database.exec(column.sql);
+  }
+  database.exec("INSERT OR IGNORE INTO schema_version (version) VALUES (5)");
+
+  aiColumnsCheckedOn = database;
 }
 
 /** Igual que `parseJsonArray`, pero para el objeto de metadatos. */
@@ -115,18 +181,36 @@ function toMessage(row: RawChatMessage): ChatMessageRow {
   };
 }
 
-/** Crea una conversación vacía y devuelve su id. */
-export function createConversation(mode: string): string {
+/**
+ * Crea una conversación vacía y devuelve su id.
+ *
+ * El modelo se fija AL CREARLA, copiando el ajuste global de ese momento, en
+ * vez de dejarlo a null y resolverlo al enviar. Así la conversación recuerda de
+ * verdad con qué se abrió: si mañana el usuario cambia su modelo por defecto,
+ * los chats de hoy siguen respondiendo con el suyo. Sin `ai` (o con sus campos
+ * a null) se comporta como antes y hereda el global.
+ */
+export function createConversation(mode: string, ai?: ConversationAi): string {
+  ensureConversationAiColumns();
   const conversationId = genId("conv");
   execute(
-    `INSERT INTO conversations (conversation_id, title, mode) VALUES (?, ?, ?)`,
-    [conversationId, UNTITLED_CONVERSATION, mode],
+    `INSERT INTO conversations (conversation_id, title, mode, provider, model, effort)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      conversationId,
+      UNTITLED_CONVERSATION,
+      mode,
+      ai?.provider ?? null,
+      ai?.model ?? null,
+      ai?.effort ?? null,
+    ],
   );
   return conversationId;
 }
 
 /** Las fijadas primero; dentro de cada grupo, las más recientes arriba. */
 export function listConversations(limit = 50): ConversationRow[] {
+  ensureConversationAiColumns();
   return queryAll<RawConversation>(
     `SELECT * FROM conversations
      ORDER BY pinned DESC, updated_at DESC
@@ -137,6 +221,7 @@ export function listConversations(limit = 50): ConversationRow[] {
 
 /** Busca por título y por contenido de los mensajes (LIKE, sin FTS5). */
 export function searchConversations(q: string, limit = 30): ConversationRow[] {
+  ensureConversationAiColumns();
   const term = q.trim();
   if (!term) return listConversations(limit);
 
@@ -156,6 +241,7 @@ export function searchConversations(q: string, limit = 30): ConversationRow[] {
 }
 
 export function getConversation(conversationId: string): ConversationRow | null {
+  ensureConversationAiColumns();
   const row = queryOne<RawConversation>(
     `SELECT * FROM conversations WHERE conversation_id = ?`,
     [conversationId],
@@ -227,6 +313,25 @@ export function setConversationMode(conversationId: string, mode: string): void 
   ]);
 }
 
+/**
+ * Fija el proveedor, el modelo y el esfuerzo de UNA conversación.
+ *
+ * Sin tocar `updated_at`: cambiar de modelo no es actividad de la conversación
+ * y, si lo fuera, un toqueteo del selector la subiría al principio del cajón
+ * por encima de aquella en la que sí se está hablando.
+ */
+export function setConversationAi(
+  conversationId: string,
+  ai: ConversationAi,
+): void {
+  ensureConversationAiColumns();
+  execute(
+    `UPDATE conversations SET provider = ?, model = ?, effort = ?
+     WHERE conversation_id = ?`,
+    [ai.provider, ai.model, ai.effort, conversationId],
+  );
+}
+
 export function togglePinned(conversationId: string): boolean {
   const row = queryOne<{ pinned: number }>(
     `SELECT pinned FROM conversations WHERE conversation_id = ?`,
@@ -271,12 +376,22 @@ export function deleteConversation(conversationId: string): void {
  *
  * "Sin mensajes" no quiere decir "sin nada": una ilustración se puede generar
  * antes de que la respuesta se persista, así que se limpian también.
+ *
+ * `keepIds` es una LISTA y no un id suelto desde que se pueden tener varios
+ * chats abiertos: al arrancar se reabren todas las pestañas de la sesión
+ * anterior y cualquiera de ellas puede estar todavía en blanco. Con un solo id
+ * se salvaba una y la limpieza se llevaba por delante el resto de pestañas
+ * justo antes de restaurarlas.
  */
-export function pruneEmptyConversations(keepId?: string): void {
+export function pruneEmptyConversations(keepIds: string[] = []): void {
+  // Los placeholders se generan a mano: `IN (?)` con un array no existe en
+  // sql.js, hay que expandirlo.
+  const keep = keepIds.filter(Boolean);
+  const placeholders = keep.map(() => "?").join(", ");
   const vacias = `
     SELECT c.conversation_id FROM conversations c
-    WHERE c.conversation_id <> COALESCE(?, '')
-      AND NOT EXISTS (
+    WHERE ${keep.length ? `c.conversation_id NOT IN (${placeholders}) AND` : ""}
+      NOT EXISTS (
             SELECT 1 FROM chat_messages m
             WHERE m.conversation_id = c.conversation_id
           )`;
@@ -284,11 +399,11 @@ export function pruneEmptyConversations(keepId?: string): void {
   executeTransaction([
     {
       sql: `DELETE FROM chat_images WHERE conversation_id IN (${vacias})`,
-      params: [keepId ?? null],
+      params: keep,
     },
     {
       sql: `DELETE FROM conversations WHERE conversation_id IN (${vacias})`,
-      params: [keepId ?? null],
+      params: keep,
     },
   ]);
 }

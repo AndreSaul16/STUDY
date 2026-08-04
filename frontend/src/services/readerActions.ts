@@ -148,6 +148,40 @@ export function openJwpubDocument(
   }, "No se pudo abrir el documento");
 }
 
+/**
+ * Abre un documento de la biblioteca local por su `DocumentId`.
+ *
+ * `openJwpubDocument` trabaja con el ÍNDICE dentro del array `documents`, que
+ * es un detalle interno; lo que viaja en las fuentes del chat es el
+ * `DocumentId`, que es lo estable. Aquí se traduce lo uno en lo otro.
+ *
+ * La publicación se carga en el store ANTES de delegar, y no es redundante:
+ * `openJwpubDocument` solo rehidrata cuando NO hay ninguna cargada, así que con
+ * otro libro abierto interpretaría el índice contra los documentos del libro
+ * equivocado y abriría cualquier cosa.
+ */
+export async function openLocalJwpubDocument(
+  symbol: string,
+  documentId: number,
+): Promise<void> {
+  const stored = await getStoredPublication(symbol);
+  if (!stored) {
+    useReaderStore.getState().setError("Esa publicación ya no está en tu biblioteca");
+    return;
+  }
+
+  const index = stored.documents.findIndex((d) => d.DocumentId === documentId);
+  if (index === -1) {
+    useReaderStore.getState().setError("Ese documento ya no está disponible");
+    return;
+  }
+
+  useLibraryStore
+    .getState()
+    .loadPublication(stored.publication, stored.documents, stored.toc);
+  await openJwpubDocument(index, symbol);
+}
+
 /** Reabre una fuente cualquiera (usado al retomar la última lectura). */
 export function openSource(source: ReadingSource): Promise<void> {
   switch (source.kind) {

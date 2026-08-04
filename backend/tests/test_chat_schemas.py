@@ -78,3 +78,91 @@ def test_accepts_conversation_id():
     )
 
     assert request.conversation_id == "c_9f3a"
+
+
+# ─── Biblioteca local del usuario ────────────────────────────────
+#
+# Todos estos casos comprueban lo mismo desde ángulos distintos: el campo acota
+# DURO pero **nunca devuelve 422**. Es la única entrada del chat en la que el
+# cliente escribe directamente en el prompt, y a la vez es un campo que el
+# `frontend/dist` desplegado no conoce.
+
+
+def _peticion(**extra):
+    return ChatRequest(messages=[ChatMessage(role="user", content="hola")], **extra)
+
+
+def _fragmento(**extra):
+    base = {
+        "symbol": "bt",
+        "publication": "Damos testimonio",
+        "document_title": "Capítulo 3",
+        "text": "Un extracto.",
+        "document_id": 12,
+    }
+    base.update(extra)
+    return base
+
+
+def test_local_library_is_optional():
+    # El cliente desplegado no manda el campo. No puede empezar a fallar.
+    assert _peticion().local_library == []
+
+
+def test_local_library_accepts_snippets():
+    request = _peticion(local_library=[_fragmento()])
+
+    assert len(request.local_library) == 1
+    assert request.local_library[0].symbol == "bt"
+    assert request.local_library[0].document_id == 12
+
+
+def test_local_library_truncates_instead_of_rejecting_too_many():
+    request = _peticion(local_library=[_fragmento() for _ in range(50)])
+
+    assert len(request.local_library) == 6
+
+
+def test_local_library_truncates_a_long_snippet():
+    request = _peticion(local_library=[_fragmento(text="x" * 9000)])
+
+    assert len(request.local_library[0].text) == 700
+
+
+def test_local_library_truncates_long_metadata():
+    request = _peticion(
+        local_library=[_fragmento(symbol="s" * 500, document_title="t" * 5000)]
+    )
+
+    assert len(request.local_library[0].symbol) == 32
+    assert len(request.local_library[0].document_title) == 200
+
+
+def test_local_library_tolerates_null_and_garbage():
+    # Un cliente que mande `null` o cualquier otra cosa no recibe un 422: no
+    # trae biblioteca, que es lo mismo que no mandar el campo.
+    assert _peticion(local_library=None).local_library == []
+    assert _peticion(local_library="bt").local_library == []
+
+
+def test_local_library_tolerates_non_string_fields():
+    request = _peticion(local_library=[{"text": "algo", "symbol": 12}])
+
+    assert request.local_library[0].symbol == ""
+    assert request.local_library[0].text == "algo"
+
+
+def test_local_library_tolerates_a_broken_document_id():
+    # Sin esto, pydantic devolvería 422 y el turno entero se perdería por un
+    # identificador que como mucho deja el chip sin enlace.
+    request = _peticion(local_library=[_fragmento(document_id="ocho")])
+
+    assert request.local_library[0].document_id is None
+
+
+def test_local_library_drops_items_that_are_not_objects():
+    # Un elemento suelto entre fragmentos válidos no puede tumbar la petición.
+    request = _peticion(local_library=["texto suelto", _fragmento(), 42])
+
+    assert len(request.local_library) == 1
+    assert request.local_library[0].symbol == "bt"

@@ -12,6 +12,7 @@ import { InteropPanel } from "@/components/organisms/InteropPanel";
 import { LibraryPanel } from "@/components/organisms/LibraryPanel";
 import { ChatPanel } from "@/components/organisms/ChatPanel";
 import { BiblePanel } from "@/components/organisms/BiblePanel";
+import { ReaderPanel } from "@/components/organisms/ReaderPanel";
 import { SearchPanel } from "@/components/organisms/SearchPanel";
 import {
   IconStar,
@@ -110,6 +111,14 @@ export function ResearchPanel({ className, onCollapse }: ResearchPanelProps) {
       />
 
       {/* ─── Contenido ─── */}
+      {/* El lector va FUERA del contenedor con scroll: `ReaderPanel` gestiona
+          el suyo propio (lista virtualizada) y anidarlos daba dos barras y un
+          scroll que no llegaba al final del capítulo. */}
+      {activeTab === RESEARCH_TABS.READER ? (
+        <div className="min-h-0 flex-1">
+          <ReaderPanel className="h-full" />
+        </div>
+      ) : (
       <div className="min-h-0 flex-1 overflow-y-auto">
         {activeTab === RESEARCH_TABS.BIBLE && <BiblePanel className="h-full" />}
 
@@ -157,6 +166,7 @@ export function ResearchPanel({ className, onCollapse }: ResearchPanelProps) {
 
         {activeTab === RESEARCH_TABS.INTEROP && <InteropPanel />}
       </div>
+      )}
     </aside>
   );
 }

@@ -9,14 +9,21 @@ import {
   IconBookmark,
   IconChat,
   IconLayers,
+  IconMic,
 } from "@/components/atoms/Icons";
 
 /**
  * BottomNav — navegación inferior del móvil. Sustituye al antiguo MobileNav.
  *
- * Cuatro destinos y no cinco: en un iPhone de 390 px eso da ~98 px por botón
- * en vez de 78. Y el primero es el Chat, que es el núcleo de la app: antes
- * estaba enterrado en la pestaña novena de diez dentro de un bottom sheet.
+ * Cinco destinos. Eran cuatro por una razón buena (a 390 px daban ~98 px por
+ * botón en vez de 78) y ahora son cinco por otra: "Voz" se usa de pie, con el
+ * móvil en la mano, y a dos toques dentro de "Más" no lo alcanzaría nadie en
+ * esa postura. A 320 px —el suelo que sostiene la app— salen 64 px por botón,
+ * todavía por encima de los 44 de objetivo táctil, así que el reparto aguanta.
+ * El sexto ya no cabría: si algún día se añade otro, hay que replantear la
+ * barra, no meterlo aquí.
+ *
+ * El primero sigue siendo el Chat, que es el núcleo de la app.
  *
  * Se esconde con el teclado abierto: 56 px de pantalla son mucho cuando
  * quedan 350 para escribir y leer.
@@ -30,6 +37,7 @@ interface NavItem {
 
 const ITEMS: NavItem[] = [
   { id: APP_VIEWS.CHAT, label: "Chat", icon: IconChat },
+  { id: APP_VIEWS.VOICE, label: "Voz", icon: IconMic },
   { id: APP_VIEWS.BIBLE, label: "Biblia", icon: IconBook },
   { id: APP_VIEWS.READ, label: "Leer", icon: IconBookmark },
   { id: APP_VIEWS.MORE, label: "Más", icon: IconLayers },

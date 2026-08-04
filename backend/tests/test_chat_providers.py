@@ -44,8 +44,8 @@ class TestGetProvider:
     def test_se_normalizan_mayusculas_y_espacios(self, value):
         assert get_provider(value) is GOOGLE
 
-    def test_los_dos_proveedores_estan_registrados(self):
-        assert set(PROVIDERS) == {"openai", "google"}
+    def test_los_proveedores_estan_registrados(self):
+        assert set(PROVIDERS) == {"openai", "google", "minimax"}
 
 
 class TestNormalizeEffort:

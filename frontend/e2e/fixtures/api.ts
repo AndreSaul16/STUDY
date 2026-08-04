@@ -48,13 +48,6 @@ export const MODOS = {
       deep: false,
     },
     {
-      id: "presentacion",
-      label: "Presentación y oración",
-      hint: "Dime el acto y te escribo el guion completo",
-      examples: ["Programa para una boda", "Presentación de un discursante", "Oración inicial"],
-      deep: false,
-    },
-    {
       id: "investigacion",
       label: "Investigación profunda",
       hint: "Dime el tema y lo investigo a fondo (varios minutos)",
@@ -185,13 +178,18 @@ export async function mockApi(page: Page): Promise<void> {
   );
 }
 
-/** Unos cuantos libros con la forma real de `BibleBook`. */
+/**
+ * Unos cuantos libros con la forma real de `BibleBook`.
+ *
+ * `section` no es decorativo: el panel agrupa por él y sin el campo los dos
+ * grupos salían vacíos, así que la lista de libros no se pintaba nunca.
+ */
 export const LIBROS = [
-  { number: 1, name: "Génesis", chapters: 50 },
-  { number: 19, name: "Salmos", chapters: 150 },
-  { number: 23, name: "Isaías", chapters: 66 },
-  { number: 43, name: "Juan", chapters: 21 },
-  { number: 50, name: "Filipenses", chapters: 4 },
+  { number: 1, name: "Génesis", chapters: 50, section: "hebreas" },
+  { number: 19, name: "Salmos", chapters: 150, section: "hebreas" },
+  { number: 23, name: "Isaías", chapters: 66, section: "hebreas" },
+  { number: 43, name: "Juan", chapters: 21, section: "griegas" },
+  { number: 50, name: "Filipenses", chapters: 4, section: "griegas" },
 ];
 
 /** Registra las peticiones al stream del chat para poder inspeccionarlas. */

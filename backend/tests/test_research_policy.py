@@ -64,7 +64,13 @@ class TestResearchGap:
             assert "No has consultado ninguna fuente" in gap
 
     def test_buscar_sin_abrir_es_brecha(self):
-        gap = research_gap(["buscar_en_biblioteca"], get_mode("analisis"))
+        # Sigue siendo brecha, pero el aviso ya no es el mismo: con una sola
+        # búsqueda en la Biblioteca y nada abierto, lo útil es mandarle al otro
+        # catálogo (ver TestUnSoloCatalogo). El aviso de "abre el documento" se
+        # reserva para cuando ya ha mirado en los dos sitios.
+        gap = research_gap(
+            ["buscar_en_biblioteca", "buscar_en_jw_org"], get_mode("analisis")
+        )
 
         assert gap is not None
         assert "abre el más relevante con abrir_documento" in gap
@@ -156,3 +162,42 @@ class TestToolCacheKey:
 
     def test_tolera_argumentos_que_no_son_dict(self):
         assert tool_cache_key("abrir_documento", None) == "abrir_documento:{}"
+
+
+class TestUnSoloCatalogo:
+    """
+    El caso real que se rompía: cuatro búsquedas en la Biblioteca, cero
+    resultados cada vez, y el agente rindiéndose sin haber tocado jw.org ni un
+    vídeo. Decirle ahí "abre el documento más relevante" es inútil: no había
+    ninguno. Se le manda al otro catálogo.
+    """
+
+    def test_solo_wol_y_sin_abrir_nada_manda_al_otro_catalogo(self):
+        mensajes = [_assistant_call("buscar_en_biblioteca")]
+
+        gap = research_gap(executed_tool_names(mensajes), get_mode("analisis"))
+
+        assert gap is not None
+        assert "buscar_en_jw_org" in gap
+        assert "abrir_video" in gap
+
+    def test_si_ya_mirO_en_los_dos_el_aviso_es_el_de_abrir_documento(self):
+        mensajes = [
+            _assistant_call("buscar_en_biblioteca"),
+            _assistant_call("buscar_en_jw_org"),
+        ]
+
+        gap = research_gap(executed_tool_names(mensajes), get_mode("analisis"))
+
+        assert gap is not None
+        assert "abrir_documento" in gap
+
+    def test_abrir_un_video_cuenta_como_haber_abierto_algo(self):
+        # Un vídeo con transcripción es contenido citable, igual que un
+        # artículo: no puede seguir pidiendo que abra un documento.
+        mensajes = [
+            _assistant_call("buscar_en_jw_org"),
+            _assistant_call("abrir_video"),
+        ]
+
+        assert research_gap(executed_tool_names(mensajes), get_mode("analisis")) is None

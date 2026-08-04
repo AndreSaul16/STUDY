@@ -7,6 +7,7 @@ import { useVisualViewport } from "@/hooks/useVisualViewport";
 import { useChatModes } from "@/components/molecules/ModePicker";
 import { ChatComposer } from "@/components/molecules/ChatComposer";
 import { ChatMessage } from "@/components/molecules/ChatMessage";
+import { ChatTabs } from "@/components/molecules/ChatTabs";
 import { takePendingChatContext } from "@/components/molecules/ContextMenu";
 import { FollowUpChips } from "@/components/molecules/FollowUpChips";
 import { ModelQuickPicker } from "@/components/molecules/ModelQuickPicker";
@@ -69,11 +70,21 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
   const setDrawerOpen = useChatStore((s) => s.setDrawerOpen);
   const conversations = useChatStore((s) => s.conversations);
   const conversationId = useChatStore((s) => s.conversationId);
+  // El título de la sesión y no el de la lista: `conversations` se filtra al
+  // buscar en el cajón y la cabecera se quedaba sin nombre mientras se escribía
+  // en la caja de búsqueda.
+  const sessionTitle = useChatStore((s) =>
+    s.activeId ? (s.sessions[s.activeId]?.title ?? null) : null,
+  );
+  const sessionAi = useChatStore((s) =>
+    s.activeId ? (s.sessions[s.activeId]?.ai ?? null) : null,
+  );
   const modes = useChatModes();
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const hydrateAi = useAiSettingsStore((s) => s.hydrate);
-  const researchActive = useResearchStore((s) => s.jobId !== null);
+  const researchJob = useResearchStore((s) => s.jobId !== null);
+  const researchConversationId = useResearchStore((s) => s.conversationId);
 
   const [input, setInput] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -114,8 +125,23 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
   }, [scrollToBottom]);
 
   const title =
+    sessionTitle ??
     conversations.find((c) => c.conversationId === conversationId)?.title ??
     "Conversación nueva";
+
+  // Con qué responde ESTA conversación. Cada campo cae al ajuste global cuando
+  // la conversación no lo tiene fijado, que es el caso de las de siempre.
+  const activeProvider = sessionAi?.provider || aiSettings.provider;
+  const activeModel =
+    sessionAi?.model || (aiSettings.byProvider[activeProvider]?.model ?? "");
+  const activeEffort = sessionAi?.effort || aiSettings.effort;
+
+  // La barra de progreso de la investigación profunda es de UNA conversación:
+  // el informe tarda minutos y el usuario puede estar leyendo otra pestaña,
+  // donde esa barra no significaría nada.
+  const researchActive =
+    researchJob &&
+    (researchConversationId === null || researchConversationId === conversationId);
 
   const currentMode = modes.find((m) => m.id === mode) ?? modes[0];
   const lastMessage = messages[messages.length - 1];
@@ -159,17 +185,15 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
               título de la conversación se quedaba en «Dame u…». */}
           <button
             onClick={() => setModelPickerOpen(true)}
-            aria-label="Modelo y esfuerzo"
+            aria-label="Modelo y esfuerzo de esta conversación"
             aria-haspopup="dialog"
             className="flex h-11 max-w-[5.5rem] shrink-0 items-center rounded-full px-2 font-ui text-[11px] text-muted-light short:h-10 sm:max-w-[7.5rem] dark:text-muted-dark"
           >
             <span className="truncate">
-              {shortModelLabel(
-                aiSettings.byProvider[aiSettings.provider]?.model ?? "",
-              ) || "Modelo"}
+              {shortModelLabel(activeModel) || "Modelo"}
             </span>
             <span className="hidden whitespace-nowrap sm:inline">
-              {` · ${aiSettings.effort}`}
+              {` · ${activeEffort}`}
             </span>
           </button>
 
@@ -193,6 +217,10 @@ export function ChatScreen({ className, embedded = false }: ChatScreenProps) {
           </button>
         </header>
       )}
+
+      {/* Las conversaciones abiertas. Se pinta sola solo cuando hay más de
+          una, así que el chat de siempre no cambia ni un píxel. */}
+      {!embedded && <ChatTabs />}
 
       {/* La región de scroll va envuelta para que el botón "Ir al final" se
           ancle a SU borde inferior. Antes era `absolute bottom-32` contra la
@@ -351,6 +379,13 @@ function ResumeResearchBanner() {
   const conversationId = useChatStore((s) => s.conversationId);
 
   if (!resumable || active) return null;
+  // Solo en SU conversación: el informe se guarda donde se pidió, y ofrecer
+  // "Reanudar" en otra pestaña invita a reengancharlo mirando un sitio donde
+  // no va a aparecer nada. Los trabajos viejos sin conversación anotada se
+  // siguen ofreciendo en cualquiera.
+  if (resumable.conversationId && resumable.conversationId !== conversationId) {
+    return null;
+  }
 
   return (
     <div className="mb-3 max-w-[68ch] rounded-xl border border-amber-600/40 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-900/10">
@@ -361,12 +396,9 @@ function ResumeResearchBanner() {
       <div className="-ml-2 mt-1 flex flex-wrap items-center gap-1">
         <button
           onClick={() => {
-            useChatStore.getState().resumeTurn();
-            void resumeResearchJob(
-              resumable.jobId,
-              resumable.conversationId ?? conversationId ?? "",
-              resumable.question,
-            );
+            const target = resumable.conversationId ?? conversationId ?? "";
+            useChatStore.getState().resumeTurn(target);
+            void resumeResearchJob(resumable.jobId, target, resumable.question);
           }}
           className="inline-flex min-h-[44px] items-center rounded-full px-3 font-ui text-xs font-medium text-amber-800 dark:text-amber-300"
         >

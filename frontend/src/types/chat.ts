@@ -15,6 +15,25 @@ export const CHAT_SOURCE_KINDS = {
   ARTICLE: "article",
   SEARCH: "search",
   DAILY: "daily",
+  /** Vídeo de jw.org, citado por su transcripción. */
+  VIDEO: "video",
+  /**
+   * Material de FUERA de jw.org (un artículo científico).
+   *
+   * Tiene su propio tipo para que se vea distinto en la interfaz: un chip de
+   * La Atalaya y uno de una revista científica no pesan lo mismo, y el usuario
+   * tiene que poder distinguirlos de un vistazo sin abrirlos.
+   */
+  EXTERNAL: "external",
+  /**
+   * Fragmento de una publicación .jwpub del PROPIO dispositivo.
+   *
+   * Tipo aparte porque su procedencia es distinta a todo lo demás: no lo buscó
+   * el agente en jw.org, lo aportó el usuario desde su biblioteca. Verlo como
+   * un chip de búsqueda normal escondería que la respuesta se apoya en algo que
+   * él mismo autorizó a enviar.
+   */
+  LOCAL: "local",
   MCP: "mcp",
 } as const;
 
@@ -72,6 +91,31 @@ export interface ChatUiMessage {
   suggestions: string[];
   meta?: ChatMessageMeta;
   createdAt: number;
+}
+
+/**
+ * Con qué responde UNA conversación. Se guarda en su fila de `conversations`.
+ *
+ * Existe para que se pueda tener una conversación con GPT y otra con Gemini
+ * abiertas a la vez: antes el proveedor, el modelo y el esfuerzo eran globales
+ * (`aiSettingsStore`) y la última elección se llevaba por delante a todos los
+ * chats.
+ *
+ * `null` en cualquiera de los tres significa «usa el ajuste global», y es el
+ * valor de las conversaciones anteriores a esta función: sus filas no tienen
+ * estas columnas y tienen que seguir abriéndose y respondiendo igual que
+ * siempre.
+ *
+ * **La API key NO está aquí, y no puede estarlo.** Vive solo en
+ * `localStorage` (ver types/aiSettings.ts): el SQLite local se exporta y se
+ * comparte como copia de seguridad, así que una key por conversación acabaría
+ * dentro de cualquier backup. Lo que se guarda es a qué proveedor pertenece la
+ * conversación; la key de ese proveedor se busca en los ajustes al enviar.
+ */
+export interface ConversationAi {
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
 }
 
 export interface ChatMode {
@@ -133,16 +177,6 @@ export const FALLBACK_CHAT_MODES: ChatMode[] = [
       "Discurso de 5 minutos sobre estudiar bien",
       "Parte de 10 minutos sobre Esdras 7:10",
       "Guion para la lectura de Isaías 58",
-    ],
-  },
-  {
-    id: "presentacion",
-    label: "Presentación y oración",
-    hint: "Dime el acto y te escribo el guion completo",
-    examples: [
-      "Programa para una boda en el Salón del Reino",
-      "Presentación de un discursante visitante",
-      "Oración inicial para una reunión especial",
     ],
   },
   {
