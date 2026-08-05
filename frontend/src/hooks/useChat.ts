@@ -8,6 +8,7 @@ import {
 import { fetchSnapshot, followJob } from "@/services/researchClient";
 import { AI_KEY_HEADER } from "@/services/aiSettingsClient";
 import { releaseTurn, stopTurn, trackTurn } from "@/services/chatTurns";
+import { traza, trazaError } from "@/utils/traza";
 import {
   searchLocalLibrary,
   toWire,
@@ -437,6 +438,13 @@ export function useChat(): UseChatReturn {
         [...requestMessages].reverse().find((m) => m.role === "user")?.content ?? "";
       const localLibrary = await localLibraryContext(pregunta);
 
+      traza("turno", "enviando", conversationId, {
+        modelo: ai.body.model ?? "(del servidor)",
+        proveedor: ai.body.provider ?? "(del servidor)",
+        fragmentosLocales: localLibrary.length,
+        mensajes: requestMessages.length,
+      });
+
       const response = await fetch(CHAT_STREAM_ENDPOINT, {
         method: "POST",
         headers: {
@@ -577,6 +585,7 @@ export function useChat(): UseChatReturn {
         .getState()
         .finishTurn(fullContent, suggestions, meta, conversationId);
     } catch (err) {
+      trazaError("turno", "excepción", conversationId, err);
       if (controller.signal.aborted) {
         // Cancelado por el usuario — el parcial se guarda igualmente.
         useChatStore.getState().abortTurn(fullContent, conversationId);
@@ -589,6 +598,9 @@ export function useChat(): UseChatReturn {
     } finally {
       // Solo si sigue siendo el nuestro: en modo profundo, `trackResearchJob`
       // ya lo ha sustituido por el suyo antes de llegar aquí.
+      traza("turno", "cerrado", conversationId, {
+        caracteres: fullContent.length,
+      });
       releaseTurn(conversationId, controller);
     }
   }, []);

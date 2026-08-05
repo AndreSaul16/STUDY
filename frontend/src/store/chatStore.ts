@@ -375,19 +375,42 @@ function globalAiSnapshot(): ConversationAi {
 
 export const useChatStore = create<ChatState>()((set, get) => {
   /** Parchea UNA sesión y reproyecta. Si ya no está abierta, no hace nada. */
+  /**
+   * Modifica UNA sesión sin pisar lo que hayan escrito las demás.
+   *
+   * **Usa la forma funcional de `set` y eso NO es un detalle de estilo.** Antes
+   * hacía `const state = get()` y construía el mapa de sesiones a partir de esa
+   * foto. Con un chat era correcto; con dos escribiendo tokens a la vez, era
+   * una carrera de lectura-modificación-escritura de manual:
+   *
+   *   1. el turno A lee la foto
+   *   2. el turno B lee LA MISMA foto
+   *   3. A escribe: su sesión se actualiza
+   *   4. B escribe: como partió de la foto vieja, devuelve la sesión de A a
+   *      como estaba y borra sus tokens
+   *
+   * Con dos streams soltando tokens decenas de veces por segundo, las sesiones
+   * se machacaban entre sí hasta dejar el chat en blanco. La forma funcional
+   * recibe el estado del momento de escribir, no el de hace un rato, así que
+   * los dos turnos se aplican en vez de pisarse.
+   *
+   * Regla para todo este fichero: si escribes algo que puede pasar mientras
+   * otro turno está vivo, va con `set((estado) => …)`. Nunca con `get()`.
+   */
   const patchSession = (
     conversationId: string,
     patch: Partial<ChatSession>,
     extra?: Partial<ChatState>,
   ): void => {
-    const state = get();
-    const current = state.sessions[conversationId];
-    if (!current) return;
-    set({
-      ...project(state, {
-        sessions: { ...state.sessions, [conversationId]: { ...current, ...patch } },
-      }),
-      ...extra,
+    set((state) => {
+      const current = state.sessions[conversationId];
+      if (!current) return {};
+      return {
+        ...project(state, {
+          sessions: { ...state.sessions, [conversationId]: { ...current, ...patch } },
+        }),
+        ...extra,
+      };
     });
   };
 
