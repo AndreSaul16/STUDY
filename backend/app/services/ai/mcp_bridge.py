@@ -121,20 +121,37 @@ class MCPBridge:
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("MCP bridge not started")
 
+        # TODO dentro del candado, no solo el contador.
+        #
+        # Antes solo se protegía el `request_id++` y la escritura quedaba
+        # fuera. Con un chat da igual; con dos, los dos hilos escriben a la vez
+        # en la MISMA tubería y las líneas JSON-RPC se entrelazan a mitad. El
+        # subproceso recibe una línea corrupta, no la puede parsear, la
+        # respuesta no llega nunca y el turno se queda colgado hasta agotar los
+        # 30 s de espera. Para el usuario: "si tengo más de un chat abierto,
+        # fallan".
+        #
+        # `stdin` es una tubería de texto con búfer de línea: `write()` NO es
+        # atómico entre hilos. El candado es lo único que garantiza que cada
+        # petición llegue entera y en una sola línea.
+        #
+        # La cola de respuesta se registra también aquí dentro: si se
+        # registrara después de escribir, el hilo lector podría llegar con la
+        # respuesta antes de que exista dónde dejarla y la tiraría.
         with self.lock:
             self.request_id += 1
             request_id = self.request_id
 
-        request = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params or {},
-        }
+            request = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params or {},
+            }
 
-        self.responses[request_id] = Queue()
-        self.process.stdin.write(json.dumps(request) + "\n")
-        self.process.stdin.flush()
+            self.responses[request_id] = Queue()
+            self.process.stdin.write(json.dumps(request) + "\n")
+            self.process.stdin.flush()
 
         return request_id
 
