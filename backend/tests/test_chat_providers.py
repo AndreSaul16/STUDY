@@ -91,15 +91,21 @@ class TestEffortParams:
             {"reasoning_effort": "high"},
         )
 
-    def test_google_usa_minimal_en_las_rondas_con_tools(self):
-        assert effort_params(GOOGLE, "ninguno") == (
-            {"reasoning_effort": "minimal"},
-            {"reasoning_effort": "minimal"},
-        )
-        assert effort_params(GOOGLE, "alto") == (
-            {"reasoning_effort": "minimal"},
-            {"reasoning_effort": "high"},
-        )
+    def test_google_no_manda_esfuerzo_en_las_rondas_con_tools(self):
+        # Antes iba "minimal", que es vocabulario NATIVO de Gemini y no está en
+        # el enum de su capa de compatibilidad (none/low/medium/high). El
+        # parámetro solo existe por una restricción de OpenAI que no aplica a
+        # Google, así que se dejó de mandar: era arriesgar por nada, y una
+        # ronda de tools que devuelve 400 tumba la conversación entera.
+        assert effort_params(GOOGLE, "ninguno") == ({}, {"reasoning_effort": "minimal"})
+        assert effort_params(GOOGLE, "alto") == ({}, {"reasoning_effort": "high"})
+
+    def test_el_esfuerzo_del_usuario_sigue_llegando_a_la_ronda_final(self):
+        # Quitar el parámetro de las rondas con tools no puede costarle al
+        # usuario el esfuerzo que eligió: la redacción es donde se nota.
+        _, respuesta = effort_params(GOOGLE, "maximo")
+
+        assert respuesta == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("spec", [OPENAI, GOOGLE])
     def test_vacio_no_manda_el_parametro_en_ninguna_ronda(self, spec):

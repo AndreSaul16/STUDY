@@ -239,7 +239,15 @@ GOOGLE = ProviderSpec(
         "alto": "high",
         "maximo": "high",
     },
-    tool_round_effort="minimal",
+    # NO se manda `reasoning_effort` en las rondas con tools. Antes iba
+    # "minimal", que es el vocabulario NATIVO de Gemini y no está en el enum
+    # de su capa de compatibilidad (none/low/medium/high). El parámetro solo
+    # existe aquí por una restricción de OpenAI —que exige 'none' cuando hay
+    # function tools— y esa restricción no aplica a Google, así que mandarlo
+    # era asumir un riesgo a cambio de nada. Ante la duda, no se manda: el
+    # esfuerzo elegido por el usuario sigue aplicándose en la ronda final,
+    # que es donde se redacta.
+    tool_round_effort=None,
     # ⚠️ La doc de Google solo ejemplifica tool_choice "auto". Se degrada a
     # "auto" y research_policy.research_gap() ya fuerza la ronda extra si el
     # modelo no consultó nada.

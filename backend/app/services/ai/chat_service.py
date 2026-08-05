@@ -45,7 +45,7 @@ from .chat_providers import (
 from .local_library import LocalSnippet, build_context_message
 from .mcp_bridge import get_mcp_bridge
 from .native_tools import NATIVE_TOOLS, call_native_tool, is_native_tool, tools_for
-from .redaction import redact
+from .redaction import provider_error_message, redact
 from .research_config import ResearchConfig
 from .research_policy import (
     budget_exhausted,
@@ -477,7 +477,7 @@ class ChatService:
                         redact(exc),
                     )
                     for event in self._fail(
-                        "Error al conectar con el proveedor de IA",
+                        provider_error_message(runtime.provider, exc),
                         total_tokens,
                         start_time,
                     ):

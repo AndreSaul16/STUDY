@@ -384,6 +384,19 @@ export function voiceRequestHeaders(): Record<string, string> {
  *
  * `provider` sí depende de la key: en modo servidor el proveedor lo decide el
  * servidor, y mandarlo solo confundiría.
+ *
+ * **El modelo tiene que ir con SU proveedor o no ir.** Este es el fallo que
+ * dejaba a Google y a MiniMax sin funcionar en producción: al elegirlos sin
+ * pegar su clave, no se mandaba `provider` (correcto, lo sirve el servidor)
+ * pero sí `model`, así que a OpenAI le llegaba un nombre de modelo de Gemini y
+ * contestaba «The model `gemini-3.5-flash` does not exist». Para el usuario
+ * era un "error de servidor" inexplicable, y ni el modelo ni el proveedor
+ * estaban rotos: el cuerpo de la petición era incoherente.
+ *
+ * Regla: el modelo solo viaja cuando quien va a atender la petición lo
+ * entiende — o porque hay key propia (entonces manda el proveedor elegido) o
+ * porque el proveedor elegido coincide con el del servidor. Si no, se omite y
+ * el servidor usa su modelo por defecto, que es lo correcto y además funciona.
  */
 export function aiRequestBody(): {
   provider?: string;
@@ -391,14 +404,16 @@ export function aiRequestBody(): {
   effort?: string;
   research?: { internet: boolean; min_year: number | null };
 } {
-  const { settings } = useAiSettingsStore.getState();
-  const model = currentModel();
+  const { settings, server } = useAiSettingsStore.getState();
+  const conKeyPropia = Boolean(currentApiKey());
   const r = settings.research;
 
+  // Con key propia atiende el proveedor elegido; sin ella, el del servidor.
+  const atiende = conKeyPropia ? settings.provider : server.provider;
+  const model = atiende === settings.provider ? currentModel() : "";
+
   return {
-    ...(currentApiKey() && settings.provider
-      ? { provider: settings.provider }
-      : {}),
+    ...(conKeyPropia && settings.provider ? { provider: settings.provider } : {}),
     ...(model ? { model } : {}),
     ...(settings.effort ? { effort: settings.effort } : {}),
     // Va SIEMPRE, no solo cuando difiere del default. El backend tiene sus

@@ -9,7 +9,7 @@ siempre dentro del mensaje de error del proveedor, no en un log escrito a mano.
 
 import pytest
 
-from app.services.ai.redaction import contains_secret, redact
+from app.services.ai.redaction import contains_secret, redact, provider_error_message
 
 OPENAI_KEY = "sk-proj-AbCdEf0123456789AbCdEf0123456789"
 GOOGLE_KEY = "AIzaSyA0123456789abcdefghijklmnopqrstu"
@@ -67,3 +67,57 @@ class TestContainsSecret:
 
     def test_no_hay_falsos_positivos_en_texto_normal(self):
         assert not contains_secret("gpt-5.6-luna · esfuerzo alto")
+
+
+class TestProviderErrorMessage:
+    """
+    Un error genérico es cómodo de escribir y carísimo de depurar.
+
+    Se estuvo media hora adivinando por qué Google no respondía porque el chat
+    decía "Error al conectar con el proveedor de IA" pasara lo que pasara,
+    mientras la causa real venía escrita en la respuesta del proveedor y se
+    tiraba a la basura.
+    """
+
+    class _Spec:
+        label = "Google Gemini"
+        id = "google"
+
+    def test_traduce_un_modelo_inexistente(self):
+        exc = Exception(
+            "Error code: 404 - {'error': {'message': 'The model "
+            "`gemini-3.5-flash` does not exist or you do not have access to "
+            "it.', 'code': 'model_not_found'}}"
+        )
+
+        mensaje = provider_error_message(self._Spec(), exc)
+
+        assert "Google Gemini" in mensaje
+        assert "no existe" in mensaje
+
+    def test_traduce_una_key_invalida(self):
+        exc = Exception("Error code: 400 - {'message': 'Please pass a valid API key'}")
+
+        assert "no es válida" in provider_error_message(self._Spec(), exc)
+
+    def test_nombra_al_proveedor_aunque_no_reconozca_el_error(self):
+        # Con tres proveedores configurables, "el proveedor de IA" ni siquiera
+        # dice cuál falló.
+        mensaje = provider_error_message(self._Spec(), Exception("algo rarísimo"))
+
+        assert "Google Gemini" in mensaje
+        assert "algo rarísimo" in mensaje
+
+    def test_nunca_deja_escapar_la_api_key(self):
+        # El SDK mete la petición entera en algunas excepciones, y ahí va la
+        # key. Esto sale por SSE a una app sin autenticación.
+        exc = Exception("fallo con Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz")
+
+        mensaje = provider_error_message(self._Spec(), exc)
+
+        assert "sk-abcdefghijklmnopqrstuvwxyz" not in mensaje
+
+    def test_recorta_los_errores_kilométricos(self):
+        mensaje = provider_error_message(self._Spec(), Exception("x" * 5000))
+
+        assert len(mensaje) < 260

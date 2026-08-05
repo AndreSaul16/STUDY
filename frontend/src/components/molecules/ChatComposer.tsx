@@ -65,7 +65,18 @@ export function ChatComposer({
 }: ChatComposerProps) {
   // "Táctil" y no "móvil": una tablet de 1024px también escribe con un
   // teclado en pantalla, y ahí Enter-envía manda medio mensaje.
-  const isTouch = useIsMobile() || useIsTouch();
+  //
+  // Los dos hooks se llaman SIEMPRE y se combinan después. Estaba escrito como
+  // `useIsMobile() || useIsTouch()`, y el `||` cortocircuita: en cuanto el
+  // primero devolvía `true`, el segundo no se llegaba a llamar. Eso cambia el
+  // número de hooks entre renders y React tumba la pantalla entera con el
+  // error #311 ("Should have a queue. You are likely calling Hooks
+  // conditionally"). Reventaba al cruzar el punto de ruptura o al resolverse
+  // la media query, que es justo lo que no pasa en un test con un viewport
+  // fijo. Nunca pongas una llamada a un hook a la derecha de `||` o `&&`.
+  const esMovil = useIsMobile();
+  const esTactil = useIsTouch();
+  const isTouch = esMovil || esTactil;
   const isDesktop = useIsDesktop();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [attachOpen, setAttachOpen] = useState(false);

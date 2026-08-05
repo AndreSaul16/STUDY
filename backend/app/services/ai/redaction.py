@@ -31,6 +31,50 @@ _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{12,}")
 _MASK = "***"
 
 
+#: Mensajes del proveedor que el usuario PUEDE accionar. Se le enseñan tal
+#: cual (ya redactados) en vez de esconderlos tras "Error al conectar".
+#:
+#: Por qué existe: durante media hora se estuvo adivinando por qué Google no
+#: respondía, porque el chat decía siempre lo mismo pasara lo que pasara. La
+#: causa real —un modelo que no existe, un parámetro que ese proveedor no
+#: admite— venía escrita en la respuesta del proveedor y se estaba tirando a
+#: la basura. Un error genérico es cómodo de escribir y carísimo de depurar.
+_ACCIONABLES = (
+    ("model", "does not exist", "Ese modelo no existe o tu cuenta no tiene acceso."),
+    ("model_not_found", "", "Ese modelo no existe o tu cuenta no tiene acceso."),
+    ("invalid_api_key", "", "La API key no es válida para este proveedor."),
+    ("Please pass a valid API key", "", "La API key no es válida para este proveedor."),
+    ("authorized_error", "", "La API key no es válida para este proveedor."),
+    ("insufficient_quota", "", "Tu cuenta no tiene saldo o ha agotado la cuota."),
+    ("rate_limit", "", "El proveedor está limitando las peticiones. Prueba en un minuto."),
+    ("context_length", "", "La conversación es demasiado larga para este modelo."),
+)
+
+
+def provider_error_message(spec: Any, exc: BaseException) -> str:
+    """
+    Mensaje de error del chat: concreto cuando se puede, genérico si no.
+
+    Nombra al proveedor SIEMPRE. "Error al conectar con el proveedor de IA" no
+    dice si el problema es la key, el modelo o el saldo, y con tres proveedores
+    configurables ni siquiera dice cuál falló.
+
+    Pasa por ``redact`` antes de salir: la excepción de un SDK puede llevar la
+    petición entera, y ahí dentro va la API key.
+    """
+    etiqueta = getattr(spec, "label", None) or getattr(spec, "id", "el proveedor")
+    detalle = redact(exc)
+
+    for aguja, extra, explicacion in _ACCIONABLES:
+        if aguja in detalle and (not extra or extra in detalle):
+            return f"{etiqueta}: {explicacion}"
+
+    # Sin patrón conocido se da el texto del proveedor, recortado. Es feo, pero
+    # es la diferencia entre poder arreglarlo y tener que adivinar.
+    resumen = " ".join(detalle.split())[:180]
+    return f"Error de {etiqueta}. {resumen}" if resumen else f"Error de {etiqueta}."
+
+
 def redact(value: Any) -> str:
     """
     Devuelve ``value`` como texto con cualquier API key sustituida por ``***``.
@@ -60,4 +104,4 @@ def contains_secret(value: Any) -> bool:
     return bool(_OPENAI_KEY.search(text) or _GOOGLE_KEY.search(text))
 
 
-__all__ = ["redact", "contains_secret"]
+__all__ = ["redact", "contains_secret", "provider_error_message"]

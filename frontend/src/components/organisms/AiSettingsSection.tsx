@@ -93,10 +93,28 @@ export function AiSettingsSection() {
               </button>
             ))}
           </div>
+          {/* Sin key propia atiende el servidor, y eso puede significar que
+              responda un proveedor DISTINTO al que acabas de marcar. Decirlo
+              importa: si no, eliges Google, te contesta OpenAI y no hay forma
+              de saberlo. Antes ni se avisaba y además se mandaba el modelo de
+              Gemini a OpenAI, que devolvía un error incomprensible. */}
           {server.has_server_key && !apiKey && (
             <p className="mt-2 font-ui text-[11px] text-muted-light dark:text-muted-dark">
-              Ahora mismo se usa la clave del servidor ({server.model}). Pon la
-              tuya para que el gasto sea tuyo y elegir tú el modelo.
+              {settings.provider === server.provider ? (
+                <>
+                  Ahora mismo se usa la clave del servidor ({server.model}). Pon
+                  la tuya para que el gasto sea tuyo y elegir tú el modelo.
+                </>
+              ) : (
+                <>
+                  <span className="text-amber-700 dark:text-amber-400">
+                    Sin tu clave de {provider?.label ?? settings.provider},
+                    responde el servidor con {server.provider} ({server.model}).
+                  </span>{" "}
+                  Pega tu clave arriba para usar {provider?.label} de verdad y
+                  poder elegir su modelo.
+                </>
+              )}
             </p>
           )}
         </div>

@@ -136,13 +136,23 @@ function turnAiConfig(ai: ConversationAi | null): {
   headers: Record<string, string>;
   body: Record<string, unknown>;
 } {
-  const { settings } = useAiSettingsStore.getState();
+  const { settings, server } = useAiSettingsStore.getState();
   const { research } = aiRequestBody();
 
   const provider = ai?.provider || settings.provider;
   const apiKey = settings.byProvider[provider]?.apiKey ?? "";
-  const model = ai?.model || settings.byProvider[provider]?.model || "";
   const effort = ai?.effort || settings.effort;
+
+  // El modelo solo viaja si quien va a atender la petición lo entiende. Sin
+  // key propia atiende el servidor con SU proveedor, y mandarle el nombre de
+  // un modelo de otro es lo que devolvía «The model `gemini-3.5-flash` does
+  // not exist» — un "error de servidor" incomprensible con todo bien
+  // configurado. Comprobado en vivo contra la API.
+  const atiende = apiKey ? provider : server.provider;
+  const model =
+    atiende === provider
+      ? ai?.model || settings.byProvider[provider]?.model || ""
+      : "";
 
   return {
     headers: apiKey ? { [AI_KEY_HEADER]: apiKey } : {},
