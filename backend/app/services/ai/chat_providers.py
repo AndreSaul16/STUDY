@@ -526,6 +526,58 @@ class ReasoningStripper:
         return resto
 
 
+def echo_assistant_message(message: Any) -> Dict[str, Any]:
+    """
+    El mensaje del asistente tal como hay que DEVOLVÉRSELO al proveedor.
+
+    **Por qué no vale reconstruirlo a mano.** El bucle copiaba solo ``id``,
+    ``name`` y ``arguments`` de cada ``tool_call``, y tiraba todo lo demás. Con
+    OpenAI daba igual; con Gemini 3 rompía el chat entero:
+
+        400 - Function call is missing a thought_signature in functionCall
+        parts. This is required for tools to work correctly.
+
+    Gemini 3 devuelve una *firma de pensamiento* pegada a cada llamada a
+    herramienta y exige que se la devuelvas en la siguiente ronda. Al
+    reconstruir el mensaje la borrábamos, así que la primera ronda funcionaba y
+    la segunda —la que manda los resultados— fallaba siempre. Para el usuario
+    era "Google no funciona".
+
+    La regla general que se aplica aquí: **lo que el proveedor añade, se le
+    devuelve**. El SDK guarda los campos que no conoce en ``model_extra``, así
+    que se copian todos en vez de ir persiguiendo el de hoy. Si mañana OpenAI
+    empieza a exigir que se le devuelvan sus ítems de razonamiento, esto ya
+    funciona.
+    """
+    calls: list[Dict[str, Any]] = []
+    for tc in getattr(message, "tool_calls", None) or []:
+        call: Dict[str, Any] = {
+            "id": tc.id,
+            "type": "function",
+            "function": {
+                "name": tc.function.name,
+                "arguments": tc.function.arguments or "{}",
+            },
+        }
+        for clave, valor in (getattr(tc, "model_extra", None) or {}).items():
+            if valor is not None:
+                call[clave] = valor
+        calls.append(call)
+
+    payload: Dict[str, Any] = {
+        "role": "assistant",
+        "content": getattr(message, "content", None),
+        "tool_calls": calls,
+    }
+    # Los extras a nivel de mensaje también se devuelven: hoy Gemini los pone
+    # en la llamada, pero nada garantiza que otro proveedor no los ponga aquí.
+    for clave, valor in (getattr(message, "model_extra", None) or {}).items():
+        if valor is not None and clave not in payload:
+            payload[clave] = valor
+
+    return payload
+
+
 def is_usable_key(api_key: Optional[str]) -> bool:
     """¿Es esto una key de verdad y no el placeholder del .env.example?"""
     clean = (api_key or "").strip()

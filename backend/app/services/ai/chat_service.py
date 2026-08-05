@@ -38,6 +38,7 @@ from .chat_providers import (
     ChatRuntime,
     ReasoningStripper,
     build_runtime,
+    echo_assistant_message,
     effort_params,
     server_runtime,
     tool_choice_for,
@@ -515,22 +516,10 @@ class ChatService:
                 rounds_with_tools += 1
 
                 # Añadir el mensaje assistant con las tool_calls solicitadas.
-                assistant_tool_calls = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments or "{}",
-                        },
-                    }
-                    for tc in raw_tool_calls
-                ]
-                full_messages.append({
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": assistant_tool_calls,
-                })
+                # Se devuelve el mensaje COMPLETO, con lo que el proveedor
+                # haya añadido. Reconstruirlo a mano borraba la firma de
+                # pensamiento de Gemini 3 y su segunda ronda daba 400.
+                full_messages.append(echo_assistant_message(message))
 
                 # Ejecutar cada herramienta (nativa o MCP, en thread) y emitir
                 # un evento SSE tool_call por cada una.

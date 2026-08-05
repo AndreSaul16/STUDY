@@ -41,7 +41,12 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from .chat_modes import ModeSpec, get_mode
-from .chat_providers import ChatRuntime, ReasoningStripper, tool_choice_for
+from .chat_providers import (
+    ChatRuntime,
+    ReasoningStripper,
+    echo_assistant_message,
+    tool_choice_for,
+)
 from .doctrinal_filter import counter_directive
 from .redaction import redact
 from .research_config import ResearchConfig
@@ -484,23 +489,7 @@ async def run_research(
                 if not calls:
                     break
 
-                full_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": message.content,
-                        "tool_calls": [
-                            {
-                                "id": call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": call.function.name,
-                                    "arguments": call.function.arguments or "{}",
-                                },
-                            }
-                            for call in calls
-                        ],
-                    }
-                )
+                full_messages.append(echo_assistant_message(message))
 
                 for call in calls:
                     name = call.function.name

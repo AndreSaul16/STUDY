@@ -14,6 +14,7 @@ la habría dejado en los logs de Railway para siempre.
 import pytest
 
 from app.services.ai.chat_providers import (
+    echo_assistant_message,
     DEFAULT_EFFORT,
     EFFORT_IDS,
     GOOGLE,
@@ -206,3 +207,79 @@ class TestServerRuntime:
         monkeypatch.delenv("CHAT_PROVIDER", raising=False)
 
         assert server_runtime() is None
+
+
+class TestEchoAssistantMessage:
+    """
+    Lo que el proveedor añade, se le devuelve.
+
+    Gemini 3 pega una `thought_signature` a cada llamada a herramienta y exige
+    recibirla de vuelta en la ronda siguiente. El bucle reconstruía el mensaje
+    a mano con solo id/name/arguments, así que la borraba: la primera ronda
+    funcionaba y la segunda daba 400 "Function call is missing a
+    thought_signature". Google no funcionaba en absoluto por esto.
+    """
+
+    class _Function:
+        def __init__(self, name, arguments):
+            self.name = name
+            self.arguments = arguments
+
+    class _ToolCall:
+        def __init__(self, id, name, arguments, extra=None):
+            self.id = id
+            self.function = TestEchoAssistantMessage._Function(name, arguments)
+            self.model_extra = extra or {}
+
+    class _Message:
+        def __init__(self, content, tool_calls, extra=None):
+            self.content = content
+            self.tool_calls = tool_calls
+            self.model_extra = extra or {}
+
+    def test_conserva_la_firma_de_pensamiento_de_gemini(self):
+        firma = {"google": {"thought_signature": "FIRMA-123"}}
+        mensaje = self._Message(
+            None, [self._ToolCall("c1", "buscar", '{"q":"x"}', {"extra_content": firma})]
+        )
+
+        salida = echo_assistant_message(mensaje)
+
+        assert salida["tool_calls"][0]["extra_content"] == firma
+
+    def test_mantiene_la_forma_que_espera_el_proveedor(self):
+        mensaje = self._Message("texto", [self._ToolCall("c1", "buscar", '{"q":"x"}')])
+
+        salida = echo_assistant_message(mensaje)
+
+        assert salida["role"] == "assistant"
+        assert salida["content"] == "texto"
+        assert salida["tool_calls"][0]["id"] == "c1"
+        assert salida["tool_calls"][0]["type"] == "function"
+        assert salida["tool_calls"][0]["function"]["name"] == "buscar"
+
+    def test_unos_argumentos_vacios_no_rompen_el_json(self):
+        mensaje = self._Message(None, [self._ToolCall("c1", "buscar", None)])
+
+        assert salida_args(echo_assistant_message(mensaje)) == "{}"
+
+    def test_copia_cualquier_extra_no_solo_el_de_google(self):
+        # La regla es general a propósito: si mañana OpenAI exige que se le
+        # devuelvan sus ítems de razonamiento, esto ya funciona.
+        mensaje = self._Message(
+            None, [self._ToolCall("c1", "b", "{}", {"lo_que_sea": {"a": 1}})]
+        )
+
+        assert echo_assistant_message(mensaje)["tool_calls"][0]["lo_que_sea"] == {"a": 1}
+
+    def test_los_extras_nulos_no_se_mandan(self):
+        mensaje = self._Message(None, [self._ToolCall("c1", "b", "{}", {"vacio": None})])
+
+        assert "vacio" not in echo_assistant_message(mensaje)["tool_calls"][0]
+
+    def test_un_mensaje_sin_tool_calls_no_revienta(self):
+        assert echo_assistant_message(self._Message("hola", None))["tool_calls"] == []
+
+
+def salida_args(payload):
+    return payload["tool_calls"][0]["function"]["arguments"]
