@@ -48,7 +48,7 @@ from .chat_providers import (
     tool_choice_for,
 )
 from .doctrinal_filter import counter_directive
-from .redaction import redact
+from .redaction import provider_error_message, redact
 from .research_config import ResearchConfig
 from .research_policy import (
     budget_exhausted,
@@ -423,6 +423,10 @@ async def run_research(
         docs_read = 0
         rounds = 0
         gaps: List[str] = []
+        # Un proveedor que falla suele fallar igual en todas las rondas. Sin
+        # esto, una investigación de siete sub-preguntas escupía siete veces el
+        # mismo error y el informe se leía como un muro de quejas.
+        fallos_avisados: set[str] = set()
         # Temas de fuera de jw.org que han salido marcados y que hay que
         # responder con la Biblia antes de redactar (ver doctrinal_filter).
         pendiente_contraste: List[str] = []
@@ -480,7 +484,24 @@ async def run_research(
                         **runtime.tool_params,
                     )
                 except Exception as exc:
+                    # Antes esto era un `break` mudo: el fallo quedaba en los
+                    # logs del servidor y el usuario veía la investigación
+                    # pararse sin motivo, a mitad, sin una sola palabra. Con
+                    # Google pasaba en CADA sub-pregunta (la firma de
+                    # pensamiento de sus tool_calls), así que el informe salía
+                    # vacío y parecía que la app se había colgado.
+                    #
+                    # Ahora se dice qué pasó y se sigue con la siguiente
+                    # sub-pregunta en vez de abandonar: un proveedor que falla
+                    # en una ronda puede responder en la siguiente, y aunque no
+                    # lo haga, media investigación explicada vale más que
+                    # ninguna sin explicar.
                     logger.error("Ronda de investigación fallida: %s", redact(exc))
+                    motivo = provider_error_message(runtime.provider, exc)
+                    if motivo not in fallos_avisados:
+                        fallos_avisados.add(motivo)
+                        job.append("error", {"message": motivo})
+                    gaps.append(subquestion)
                     break
                 force = False
 
