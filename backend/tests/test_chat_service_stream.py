@@ -10,13 +10,14 @@ se entere en el servidor:
     persiste con el mensaje y lo que pinta el pie "modelo · esfuerzo".
 """
 
+import json
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
 import pytest
 
 from app.services.ai.chat_providers import OPENAI, answer_token_cap, native_effort
-from app.services.ai.chat_service import ChatService
+from app.services.ai.chat_service import TOOL_FAILED, ChatService, tool_failed
 from app.services.ai.local_library import from_payload
 
 
@@ -47,9 +48,20 @@ class _Mensaje:
 
 
 class _Respuesta:
-    def __init__(self, content: str = ""):
-        self.choices = [type("C", (), {"message": _Mensaje(content)})()]
+    def __init__(self, content: str = "", tool_calls=None):
+        self.choices = [
+            type("C", (), {"message": _Mensaje(content, tool_calls)})()
+        ]
         self.usage = None
+
+
+class _ToolCall:
+    """Una tool_call como la devuelve el SDK, con lo que mira el bucle."""
+
+    def __init__(self, name: str, arguments: str = "{}", id: str = "call-1"):
+        self.id = id
+        self.function = SimpleNamespace(name=name, arguments=arguments)
+        self.model_extra: Dict[str, Any] = {}
 
 
 class _Stream:
@@ -73,6 +85,7 @@ class _Completions:
         revienta: bool = False,
         textos: List[str] | None = None,
         tandas: List[List[str]] | None = None,
+        rondas: List[List[str]] | None = None,
     ):
         self._revienta = revienta
         self._textos = textos if textos is not None else ["Hola."]
@@ -80,6 +93,10 @@ class _Completions:
         #: una primera pasada vacía y una segunda que sí escribe. Cuando se
         #: agotan, se repite el último.
         self._tandas = tandas
+        #: Qué herramientas pide el modelo en cada ronda (por nombre). Cuando se
+        #: agotan, deja de pedir y el bucle pasa a redactar.
+        self._rondas = rondas or []
+        self._ronda = 0
         #: Los `messages` de cada llamada. Es la única forma de comprobar qué
         #: se le puso delante al modelo sin salir a la red.
         self.llamadas: List[List[Dict[str, Any]]] = []
@@ -99,6 +116,15 @@ class _Completions:
                 return _Stream(self._tandas[indice])
             self._streams += 1
             return _Stream(self._textos)
+        if self._ronda < len(self._rondas):
+            nombres = self._rondas[self._ronda]
+            self._ronda += 1
+            return _Respuesta(
+                tool_calls=[
+                    _ToolCall(nombre, id=f"call-{self._ronda}-{i}")
+                    for i, nombre in enumerate(nombres)
+                ]
+            )
         return _Respuesta("")
 
 
@@ -128,6 +154,7 @@ class _Runtime:
             id="openai",
             inline_reasoning=inline_reasoning,
             min_answer_effort=OPENAI.min_answer_effort,
+            supports_tool_choice_required=OPENAI.supports_tool_choice_required,
         )
 
     # Los cálculos reales, no una copia: si la holgura del pensamiento cambia,
@@ -425,3 +452,104 @@ class TestTopeDeTokensDeLaRedaccion:
             k for k in runtime.client.completions.kwargs if k.get("stream")
         )
         assert redaccion["max_completion_tokens"] == 900
+
+
+# ─── La caché de herramientas ────────────────────────────────────
+
+
+class TestLaCacheNoGuardaAverias:
+    """
+    La caché por petición existe porque cada scrape cuesta ~20 s y el modelo
+    reabre el mismo documento en rondas distintas. Pero guardaba también las
+    AVERÍAS, y eso tiene un efecto perverso: el modelo reintenta la fuente que
+    falló —justo lo que se le pide que haga— y recibe el mismo error al
+    instante, sin que nadie lo haya vuelto a intentar. Se rendía a la primera
+    creyendo que lo había intentado dos veces.
+    """
+
+    @pytest.fixture()
+    def servicio_con_tools(self, servicio):
+        servicio.tools = [
+            {
+                "type": "function",
+                "function": {"name": "leer_pasaje_biblico", "parameters": {}},
+            }
+        ]
+        return servicio
+
+    @pytest.mark.asyncio
+    async def test_una_averia_se_vuelve_a_intentar(
+        self, servicio_con_tools, monkeypatch
+    ):
+        intentos: List[str] = []
+
+        async def revienta(self, name, args, config=None):
+            intentos.append(name)
+            return json.dumps({"error": TOOL_FAILED})
+
+        monkeypatch.setattr(ChatService, "_run_tool", revienta)
+        # El modelo pide LA MISMA herramienta con los mismos argumentos en dos
+        # rondas: misma clave de caché.
+        runtime = _Runtime(
+            _Cliente(rondas=[["leer_pasaje_biblico"], ["leer_pasaje_biblico"]])
+        )
+
+        await _recoger(servicio_con_tools, runtime)
+
+        assert len(intentos) == 2
+
+    @pytest.mark.asyncio
+    async def test_un_resultado_bueno_si_se_cachea(
+        self, servicio_con_tools, monkeypatch
+    ):
+        intentos: List[str] = []
+
+        async def responde(self, name, args, config=None):
+            intentos.append(name)
+            return json.dumps({"titulo": "Hechos 20:26, 27"})
+
+        monkeypatch.setattr(ChatService, "_run_tool", responde)
+        runtime = _Runtime(
+            _Cliente(rondas=[["leer_pasaje_biblico"], ["leer_pasaje_biblico"]])
+        )
+
+        await _recoger(servicio_con_tools, runtime)
+
+        # Un scrape, no dos: para esto está la caché.
+        assert len(intentos) == 1
+
+    @pytest.mark.asyncio
+    async def test_un_error_legitimo_de_la_herramienta_si_se_cachea(
+        self, servicio_con_tools, monkeypatch
+    ):
+        """"No encontrado" es determinista: volver a preguntar da lo mismo."""
+        intentos: List[str] = []
+
+        async def no_encontrado(self, name, args, config=None):
+            intentos.append(name)
+            return json.dumps({"error": "no encontrado"})
+
+        monkeypatch.setattr(ChatService, "_run_tool", no_encontrado)
+        runtime = _Runtime(
+            _Cliente(rondas=[["leer_pasaje_biblico"], ["leer_pasaje_biblico"]])
+        )
+
+        await _recoger(servicio_con_tools, runtime)
+
+        assert len(intentos) == 1
+
+
+class TestToolFailed:
+    def test_reconoce_la_averia(self):
+        assert tool_failed(json.dumps({"error": TOOL_FAILED}))
+
+    def test_no_confunde_un_error_de_la_herramienta_con_una_averia(self):
+        assert not tool_failed(json.dumps({"error": "no encontrado"}))
+
+    def test_un_resultado_bueno_no_es_averia(self):
+        assert not tool_failed(json.dumps({"titulo": "Isaías 58"}))
+
+    @pytest.mark.parametrize("basura", ["", "no soy json", "[]", "null"])
+    def test_lo_que_no_parsea_no_se_da_por_averia(self, basura):
+        # Ante la duda, se cachea: es el comportamiento de antes.
+        assert not tool_failed(basura)

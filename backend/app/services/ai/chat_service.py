@@ -171,6 +171,32 @@ _FOLLOWUPS_PROMPT = (
 )
 
 
+#: Marca de que la herramienta NO se llegó a ejecutar: excepción, timeout del
+#: scrape, MCP caído. No es un resultado, es una avería.
+TOOL_FAILED = "tool execution failed"
+
+
+def tool_failed(content: str) -> bool:
+    """
+    ¿Fue una avería de ejecución, y no un resultado con error legítimo?
+
+    Se usa para NO cachear el fallo. La caché por petición existe porque el
+    modelo reabre el mismo documento en rondas distintas y cada scrape cuesta
+    ~20 s, pero guardar ahí una avería transitoria tiene un efecto perverso: el
+    modelo reintenta —que es justo lo que se le pide que haga cuando una fuente
+    falla— y recibe el mismo error al instante, sin que nadie lo haya vuelto a
+    intentar. Se rendía a la primera creyendo que lo había intentado dos veces.
+
+    Un ``{"error": "no encontrado"}`` de la propia herramienta SÍ se cachea: eso
+    es determinista, volver a preguntar da lo mismo.
+    """
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(payload, dict) and payload.get("error") == TOOL_FAILED
+
+
 def build_system_prompt(mode: ModeSpec, web_enabled: bool = False) -> str:
     """
     Compone el system prompt del chat para un modo concreto.
@@ -337,7 +363,7 @@ class ChatService:
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
             logger.error("Error ejecutando herramienta %s: %s", name, redact(exc))
-            return json.dumps({"error": "tool execution failed"})
+            return json.dumps({"error": TOOL_FAILED})
 
     async def _generate_followups(
         self,
@@ -555,7 +581,9 @@ class ChatService:
                         content = await self._run_tool(
                             tool_name, tool_args, settings
                         )
-                        tool_cache[cache_key] = content
+                        # Una avería no se cachea: ver `tool_failed`.
+                        if not tool_failed(content):
+                            tool_cache[cache_key] = content
 
                     yield ": ping\n\n"
 

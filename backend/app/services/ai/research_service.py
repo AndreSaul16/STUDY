@@ -42,6 +42,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from .chat_modes import ModeSpec, get_mode
 from .chat_providers import (
+    RETRY_RESERVE,
     ChatRuntime,
     ReasoningStripper,
     echo_assistant_message,
@@ -106,6 +107,15 @@ _SYNTHESIS_SYSTEM = (
     "Ya has terminado de investigar. Redacta ahora el informe completo con el "
     "formato del modo. Sub-preguntas sin ninguna fuente encontrada: {gaps}. "
     "Esas van en la sección «Lo que no encontré»."
+)
+
+#: Qué se le dice al usuario cuando la síntesis no escribe nada. La
+#: investigación sí se hizo, y eso hay que decírselo: si no, parece que los tres
+#: minutos de espera no sirvieron para nada.
+_EMPTY_REPORT_MESSAGE = (
+    "La investigación terminó pero el modelo no llegó a redactar el informe: se "
+    "quedó sin espacio al razonar. Prueba a bajar el esfuerzo de razonamiento "
+    "en Ajustes de IA y vuelve a lanzarla."
 )
 
 
@@ -382,7 +392,8 @@ async def run_research(
     try:
         await service.ensure_tools()
 
-        from .chat_service import build_system_prompt  # evita el import circular
+        # Import local: evita el circular con chat_service.
+        from .chat_service import build_system_prompt, tool_failed
 
         settings = job.config
         tools = service.tools_for(settings)
@@ -526,12 +537,16 @@ async def run_research(
                             content = json.dumps(
                                 {"error": "límite de documentos alcanzado"}
                             )
+                            tool_cache[key] = content
                         else:
                             content = await service._run_tool(
                                 name, args, settings
                             )
                             docs_read += 1
-                        tool_cache[key] = content
+                            # Una avería no se cachea: si el modelo vuelve a
+                            # pedir esta fuente, se intenta de verdad otra vez.
+                            if not tool_failed(content):
+                                tool_cache[key] = content
 
                     try:
                         parsed = json.loads(content)
@@ -592,39 +607,76 @@ async def run_research(
             }
         )
 
-        answer = ""
-        limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
-        try:
-            stream = await runtime.client.chat.completions.create(
-                model=runtime.model,
-                messages=full_messages,
-                max_completion_tokens=mode_spec.max_tokens,
-                stream=True,
-                stream_options={"include_usage": True},
-                **runtime.answer_params,
-            )
-            async for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                visible = limpiador.feed(delta.content or "")
-                if visible:
-                    answer += visible
-                    # El informe se va guardando en el trabajo según se
-                    # escribe, no solo al final: la instantánea de
-                    # ``GET /api/research/{id}`` se anuncia como respaldo del
-                    # SSE y devolvía la respuesta vacía durante toda la
-                    # redacción, que es justo cuando hay algo que rescatar.
-                    job.answer = answer
-                    job.append("token", {"text": visible})
-        except Exception as exc:
-            logger.error("Síntesis fallida: %s", redact(exc))
-            job.append("error", {"message": "Error al redactar el informe"})
+        # Dos pasadas, igual que en el chat y por el mismo motivo: el tope de
+        # tokens lo comparten el razonamiento y el texto, así que con esfuerzo
+        # alto el modelo puede gastárselo entero pensando y cerrar el stream
+        # sin escribir el informe. Aquí duele más: son tres minutos de trabajo,
+        # y un `done` con la respuesta vacía se tira por el desagüe sin dejar
+        # rastro (el cliente no guarda mensaje si no hay texto).
+        pasadas: list[tuple[Dict[str, Any], int]] = [
+            (runtime.answer_params, runtime.answer_cap(mode_spec.max_tokens)),
+        ]
+        rescate = runtime.retry_params()
+        if rescate != runtime.answer_params:
+            pasadas.append((rescate, mode_spec.max_tokens + RETRY_RESERVE))
 
-        cola = limpiador.flush()
-        if cola:
-            answer += cola
-            job.append("token", {"text": cola})
+        answer = ""
+        fallo_del_proveedor = False
+        for intento, (params, cap) in enumerate(pasadas, start=1):
+            limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
+            motivo: Optional[str] = None
+            try:
+                stream = await runtime.client.chat.completions.create(
+                    model=runtime.model,
+                    messages=full_messages,
+                    max_completion_tokens=cap,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    **params,
+                )
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    motivo = getattr(chunk.choices[0], "finish_reason", None) or motivo
+                    delta = chunk.choices[0].delta
+                    visible = limpiador.feed(delta.content or "")
+                    if visible:
+                        answer += visible
+                        # El informe se va guardando en el trabajo según se
+                        # escribe, no solo al final: la instantánea de
+                        # ``GET /api/research/{id}`` se anuncia como respaldo del
+                        # SSE y devolvía la respuesta vacía durante toda la
+                        # redacción, que es justo cuando hay algo que rescatar.
+                        job.answer = answer
+                        job.append("token", {"text": visible})
+            except Exception as exc:
+                logger.error("Síntesis fallida: %s", redact(exc))
+                fallo_del_proveedor = True
+
+            cola = limpiador.flush()
+            if cola:
+                answer += cola
+                job.answer = answer
+                job.append("token", {"text": cola})
+
+            if answer.strip() or fallo_del_proveedor:
+                break
+
+            logger.warning(
+                "Informe vacío (intento %s/%s): modelo=%s finish_reason=%s tope=%s",
+                intento,
+                len(pasadas),
+                runtime.model,
+                motivo,
+                cap,
+            )
+
+        if fallo_del_proveedor:
+            job.append("error", {"message": "Error al redactar el informe"})
+        elif not answer.strip():
+            # Nunca un informe vacío por bueno: tres minutos de investigación
+            # se perdían sin que nada lo dijera.
+            job.append("error", {"message": _EMPTY_REPORT_MESSAGE})
 
         job.answer = answer
         job.append(
