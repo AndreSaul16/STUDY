@@ -164,6 +164,22 @@ _GAP_TOO_FEW_ROUNDS = (
     "otra fuente relevante antes de redactar."
 )
 
+#: Mensaje de cierre antes de la ronda de redacción.
+#:
+#: No es decoración: sin él, el último mensaje que ve el modelo es un `role:
+#: tool` y la petición va SIN `tools`. Con OpenAI eso funciona; con Gemini vía
+#: la capa de compatibilidad es un turno que acaba en `functionResponse` sin
+#: `functionDeclarations`, y ahí devuelve un candidato sin partes: stream vacío,
+#: `finish_reason` normal, ni un error. Que la investigación profunda SÍ
+#: redactara con el mismo modelo y el mismo esfuerzo es la pista: ese camino
+#: siempre ha metido su `_SYNTHESIS_SYSTEM` antes de redactar. Esto es la
+#: paridad que le faltaba al chat.
+_WRITE_NOW = (
+    "Ya has terminado de consultar las fuentes. Redacta AHORA la respuesta "
+    "completa con el formato del modo, usando lo que has encontrado. No pidas "
+    "más herramientas: no quedan rondas."
+)
+
 _FOLLOWUPS_PROMPT = (
     "Devuelve SOLO un array JSON con 3 preguntas breves (máx. 9 palabras cada "
     "una), en español, que este usuario querría hacer a continuación sobre lo "
@@ -632,6 +648,11 @@ class ChatService:
         # holgura de sobra: el caso real era un Gemini con esfuerzo alto que se
         # gastaba los 900 tokens del modo "comentario" pensando y cerraba el
         # stream vacío. Insistir con los mismos parámetros habría dado lo mismo.
+        # Solo si de verdad se investigó: sin ninguna ronda de herramientas el
+        # historial no acaba en un `tool` y este recordatorio sobraría.
+        if rounds_with_tools:
+            full_messages.append({"role": "system", "content": _WRITE_NOW})
+
         visible_cap = min(OPENAI_MAX_TOKENS, mode_spec.max_tokens)
         pasadas: list[tuple[Dict[str, Any], int]] = [
             (runtime.answer_params, runtime.answer_cap(visible_cap)),
@@ -646,6 +667,10 @@ class ChatService:
             # usuario ve el monólogo interno delante de su comentario.
             limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
             motivo: Optional[str] = None
+            #: ¿Pidió herramientas en vez de escribir? La ronda final va sin
+            #: `tools`, así que esto no debería pasar; si pasa, es la causa del
+            #: stream vacío y sin él no hay forma de saberlo desde el log.
+            pidio_herramientas = False
             try:
                 final_stream = await runtime.client.chat.completions.create(
                     model=runtime.model,
@@ -665,6 +690,8 @@ class ChatService:
                     # él el fallo no se puede diagnosticar desde los logs.
                     motivo = getattr(chunk.choices[0], "finish_reason", None) or motivo
                     delta = chunk.choices[0].delta
+                    if getattr(delta, "tool_calls", None):
+                        pidio_herramientas = True
                     if delta.content:
                         visible = limpiador.feed(delta.content)
                         if visible:
@@ -687,14 +714,20 @@ class ChatService:
                 break
 
             logger.warning(
-                "Redacción vacía (intento %s/%s): modelo=%s finish_reason=%s "
-                "tope=%s params=%s",
+                "Redacción vacía (intento %s/%s): proveedor=%s modelo=%s "
+                "finish_reason=%s tope=%s params=%s rondas_de_tools=%s "
+                "mensajes=%s ultimo_rol=%s pidio_herramientas=%s",
                 intento,
                 len(pasadas),
+                runtime.provider.id,
                 runtime.model,
                 motivo,
                 cap,
                 params,
+                rounds_with_tools,
+                len(full_messages),
+                full_messages[-1].get("role") if full_messages else "-",
+                pidio_herramientas,
             )
 
         if not answer.strip():

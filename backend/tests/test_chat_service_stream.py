@@ -553,3 +553,56 @@ class TestToolFailed:
     def test_lo_que_no_parsea_no_se_da_por_averia(self, basura):
         # Ante la duda, se cachea: es el comportamiento de antes.
         assert not tool_failed(basura)
+
+
+class TestElRecordatorioDeRedactar:
+    """
+    Sin un mensaje de cierre, el último que ve el modelo es un `role: tool` y la
+    petición va SIN `tools`. Con OpenAI da igual; con Gemini es un turno que
+    acaba en `functionResponse` sin `functionDeclarations` y devuelve un
+    candidato sin partes: stream vacío, sin error. La investigación profunda
+    nunca tuvo el problema porque siempre metió su `_SYNTHESIS_SYSTEM` antes de
+    redactar.
+    """
+
+    @pytest.fixture()
+    def servicio_con_tools(self, servicio):
+        servicio.tools = [
+            {
+                "type": "function",
+                "function": {"name": "leer_pasaje_biblico", "parameters": {}},
+            }
+        ]
+        return servicio
+
+    @pytest.mark.asyncio
+    async def test_tras_investigar_se_le_dice_que_redacte(
+        self, servicio_con_tools, monkeypatch
+    ):
+        async def responde(self, name, args, config=None):
+            return json.dumps({"titulo": "Hechos 20:26, 27"})
+
+        monkeypatch.setattr(ChatService, "_run_tool", responde)
+        runtime = _Runtime(_Cliente(rondas=[["leer_pasaje_biblico"]]))
+
+        await _recoger(servicio_con_tools, runtime)
+
+        redaccion = next(
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        )
+        ultimo = redaccion["messages"][-1]
+        assert ultimo["role"] == "system"
+        assert "Redacta AHORA" in ultimo["content"]
+
+    @pytest.mark.asyncio
+    async def test_sin_investigar_no_se_le_recuerda_nada(self, servicio):
+        # No hubo ronda de herramientas: el historial no acaba en un `tool` y el
+        # recordatorio solo sería ruido en el contexto.
+        runtime = _Runtime(_Cliente(textos=["Hola."]))
+
+        await _recoger(servicio, runtime)
+
+        redaccion = next(
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        )
+        assert redaccion["messages"][-1]["role"] == "user"
