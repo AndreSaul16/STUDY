@@ -35,6 +35,7 @@ from typing import AsyncGenerator, Dict, Any, Iterator, List, Optional, Sequence
 from .chat_modes import DEFAULT_MODE, CHAT_MODES, ModeSpec, get_mode, list_modes
 from .chat_providers import (
     PROVIDERS,
+    RETRY_RESERVE,
     ChatRuntime,
     ReasoningStripper,
     build_runtime,
@@ -234,6 +235,15 @@ def parse_followups(raw: str, fallback: Sequence[str]) -> List[str]:
         return list(fallback)[:3]
     return items[:3]
 
+
+#: Qué se le dice al usuario cuando el modelo cierra el stream sin escribir una
+#: sola palabra, ni siquiera en el reintento. Accionable, porque él SÍ puede
+#: hacer algo: bajar el esfuerzo o elegir un modo con más espacio.
+_EMPTY_ANSWER_MESSAGE = (
+    "El modelo terminó sin escribir la respuesta. La investigación se hizo, "
+    "pero se quedó sin espacio para redactar: prueba a bajar el esfuerzo de "
+    "razonamiento en Ajustes de IA, o vuelve a intentarlo."
+)
 
 #: Mensaje del 503 cuando no hay ni key de cliente ni de servidor. Accionable:
 #: dice exactamente qué hacer, porque el usuario SÍ puede arreglarlo.
@@ -588,42 +598,85 @@ class ChatService:
         )
 
         # ─── Ronda final: respuesta en streaming SIN tools ────────────
+        #
+        # Dos pasadas como máximo. La segunda solo ocurre si la primera no
+        # escribió NADA, y va con el esfuerzo mínimo del proveedor y con
+        # holgura de sobra: el caso real era un Gemini con esfuerzo alto que se
+        # gastaba los 900 tokens del modo "comentario" pensando y cerraba el
+        # stream vacío. Insistir con los mismos parámetros habría dado lo mismo.
+        visible_cap = min(OPENAI_MAX_TOKENS, mode_spec.max_tokens)
+        pasadas: list[tuple[Dict[str, Any], int]] = [
+            (runtime.answer_params, runtime.answer_cap(visible_cap)),
+        ]
+        rescate = runtime.retry_params()
+        if rescate != runtime.answer_params:
+            pasadas.append((rescate, visible_cap + RETRY_RESERVE))
+
         answer = ""
-        # MiniMax escribe su razonamiento dentro del contenido; sin esto el
-        # usuario ve el monólogo interno delante de su comentario.
-        limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
-        try:
-            final_stream = await runtime.client.chat.completions.create(
-                model=runtime.model,
-                messages=full_messages,
-                max_completion_tokens=min(OPENAI_MAX_TOKENS, mode_spec.max_tokens),
-                stream=True,
-                stream_options={"include_usage": True},
-                **runtime.answer_params,
+        for intento, (params, cap) in enumerate(pasadas, start=1):
+            # MiniMax escribe su razonamiento dentro del contenido; sin esto el
+            # usuario ve el monólogo interno delante de su comentario.
+            limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
+            motivo: Optional[str] = None
+            try:
+                final_stream = await runtime.client.chat.completions.create(
+                    model=runtime.model,
+                    messages=full_messages,
+                    max_completion_tokens=cap,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    **params,
+                )
+                async for chunk in final_stream:
+                    if getattr(chunk, "usage", None):
+                        total_tokens += chunk.usage.total_tokens
+                    if not chunk.choices:
+                        continue
+                    # Por qué paró el modelo. Es el único dato que distingue
+                    # "se quedó sin tokens" de "no tenía nada que decir", y sin
+                    # él el fallo no se puede diagnosticar desde los logs.
+                    motivo = getattr(chunk.choices[0], "finish_reason", None) or motivo
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        visible = limpiador.feed(delta.content)
+                        if visible:
+                            answer += visible
+                            yield self._format_sse("token", {"text": visible})
+            except Exception as exc:
+                logger.error("Stream fallido (respuesta final): %s", redact(exc))
+                for event in self._fail(
+                    "Error al generar la respuesta final", total_tokens, start_time
+                ):
+                    yield event
+                return
+
+            cola = limpiador.flush()
+            if cola:
+                answer += cola
+                yield self._format_sse("token", {"text": cola})
+
+            if answer.strip():
+                break
+
+            logger.warning(
+                "Redacción vacía (intento %s/%s): modelo=%s finish_reason=%s "
+                "tope=%s params=%s",
+                intento,
+                len(pasadas),
+                runtime.model,
+                motivo,
+                cap,
+                params,
             )
-            async for chunk in final_stream:
-                if getattr(chunk, "usage", None):
-                    total_tokens += chunk.usage.total_tokens
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    visible = limpiador.feed(delta.content)
-                    if visible:
-                        answer += visible
-                        yield self._format_sse("token", {"text": visible})
-        except Exception as exc:
-            logger.error("Stream fallido (respuesta final): %s", redact(exc))
-            for event in self._fail(
-                "Error al generar la respuesta final", total_tokens, start_time
-            ):
+
+        if not answer.strip():
+            # Nunca un `done` limpio con las manos vacías: el cliente lo daba
+            # por bueno, no guardaba mensaje y borraba el rastro de la
+            # investigación, así que la pantalla quedaba como si el usuario no
+            # hubiera preguntado nada.
+            for event in self._fail(_EMPTY_ANSWER_MESSAGE, total_tokens, start_time):
                 yield event
             return
-
-        cola = limpiador.flush()
-        if cola:
-            answer += cola
-            yield self._format_sse("token", {"text": cola})
 
         suggestions = await self._generate_followups(
             runtime, full_messages, answer, mode_spec

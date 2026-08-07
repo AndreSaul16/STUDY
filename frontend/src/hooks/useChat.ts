@@ -428,6 +428,9 @@ export function useChat(): UseChatReturn {
     let suggestions: string[] = [];
     let meta: ChatMessageMeta | undefined;
     let deepJob: { jobId: string; estimatedSeconds: number } | null = null;
+    // Si el backend ya explicó qué falló, su mensaje manda: no se pisa con el
+    // genérico de "vino vacío".
+    let streamFailed = false;
 
     try {
       // Antes del `fetch` y no en paralelo: el cuerpo tiene que salir ya con
@@ -538,6 +541,7 @@ export function useChat(): UseChatReturn {
               chat.appendToken(fullContent, conversationId);
               break;
             case "error":
+              streamFailed = true;
               chat.setError(
                 String(parsed.data.message ?? "Unknown error"),
                 conversationId,
@@ -579,6 +583,21 @@ export function useChat(): UseChatReturn {
           deepJob.estimatedSeconds,
         );
         return;
+      }
+
+      // Un stream que acaba en `done` limpio pero sin un solo token no es un
+      // turno correcto, y `finishTurn("")` no guarda mensaje: borra el rastro
+      // de herramientas y deja la pantalla igual que antes de preguntar. El
+      // usuario veía "Leyendo el pasaje bíblico ✓" y de pronto nada, como si
+      // nunca hubiera investigado. Con el error puesto al menos se lo dice, y
+      // el banner trae botón de reintentar.
+      if (!fullContent.trim() && !streamFailed) {
+        useChatStore
+          .getState()
+          .setError(
+            "El modelo cerró la respuesta sin escribir nada. Vuelve a intentarlo.",
+            conversationId,
+          );
       }
 
       useChatStore

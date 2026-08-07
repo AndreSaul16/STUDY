@@ -103,6 +103,12 @@ class ProviderSpec:
     #: Valor de ``reasoning_effort`` obligatorio en las rondas CON ``tools``.
     #: ``None`` = no mandar el parámetro en esas rondas.
     tool_round_effort: Optional[str]
+    #: El esfuerzo MÍNIMO que se le puede pedir en la ronda de redacción, para
+    #: el reintento cuando la primera pasada no escribe nada. ``None`` = no
+    #: mandar el parámetro. No es lo mismo que ``effort_map["ninguno"]``: aquí
+    #: solo entra un valor que se sabe aceptado por el endpoint que se usa de
+    #: verdad (la capa de compatibilidad, no la API nativa).
+    min_answer_effort: Optional[str]
     #: ⚠️ No verificado en Gemini: capacidad, no suposición (ver plan §0).
     supports_tool_choice_required: bool
     supports_images: bool
@@ -174,6 +180,7 @@ OPENAI = ProviderSpec(
     # /v1/chat/completions ... set reasoning_effort to 'none'". Es lo que ya
     # hacía chat_service; aquí solo se generaliza.
     tool_round_effort="none",
+    min_answer_effort="none",
     supports_tool_choice_required=True,
     supports_images=True,
     # gpt-image-1 se deprecia el 23/10/2026: no se ofrece.
@@ -248,6 +255,11 @@ GOOGLE = ProviderSpec(
     # esfuerzo elegido por el usuario sigue aplicándose en la ronda final,
     # que es donde se redacta.
     tool_round_effort=None,
+    # "low" y no "minimal": el enum de la capa de compatibilidad es
+    # none/low/medium/high, y "minimal" es vocabulario NATIVO de Gemini (mismo
+    # motivo por el que tool_round_effort dejó de mandarlo). Para el reintento
+    # hace falta un valor que se sepa aceptado, no el más barato posible.
+    min_answer_effort="low",
     # ⚠️ La doc de Google solo ejemplifica tool_choice "auto". Se degrada a
     # "auto" y research_policy.research_gap() ya fuerza la ronda extra si el
     # modelo no consultó nada.
@@ -307,6 +319,7 @@ MINIMAX = ProviderSpec(
         "maximo": "high",
     },
     tool_round_effort="low",
+    min_answer_effort="low",
     #: Verificado: devuelve tool_calls tanto con "required" como con "auto".
     supports_tool_choice_required=True,
     # Generación de imagen no verificada por esta vía: no se ofrece hasta
@@ -425,6 +438,45 @@ def effort_params(
         {"reasoning_effort": spec.tool_round_effort} if spec.tool_round_effort else {}
     )
     return tool_params, {"reasoning_effort": applied}
+
+
+#: Tokens EXTRA que hay que dejarle al pensamiento en la ronda de redacción.
+#:
+#: ``max_completion_tokens`` NO es el tope del texto que ve el usuario: es el
+#: tope de todo lo que produce el modelo, razonamiento incluido (OpenAI lo dice
+#: literalmente —"includes reasoning tokens"— y ``maxOutputTokens`` de Gemini
+#: 2.5+/3 se comporta igual). Un modo con 900 tokens y esfuerzo "alto" puede
+#: gastárselos enteros pensando y cerrar el stream sin escribir una palabra: eso
+#: es exactamente lo que se veía —turno cerrado con 0 caracteres, sin error, sin
+#: rastro de la investigación que sí se había hecho—.
+#:
+#: Son holguras, no medidas: el modelo para cuando termina de pensar, así que
+#: pasarse de generoso no cuesta tokens, solo levanta el techo. Quedarse corto
+#: sí cuesta: cuesta la respuesta entera.
+_THINKING_RESERVE: Dict[str, int] = {
+    "ninguno": 0,
+    "bajo": 1024,
+    "medio": 3072,
+    "alto": 8192,
+    "maximo": 12288,
+}
+
+#: Holgura del reintento: cuando la primera pasada no escribió nada, se vuelve
+#: con el esfuerzo mínimo del proveedor y con sitio de sobra.
+RETRY_RESERVE = _THINKING_RESERVE["maximo"]
+
+
+def answer_token_cap(
+    spec: ProviderSpec, effort: Optional[str], visible_tokens: int
+) -> int:
+    """
+    ``max_completion_tokens`` de la ronda de redacción.
+
+    ``visible_tokens`` es lo que el modo quiere que ocupe la RESPUESTA; a eso se
+    le suma la holgura del pensamiento, que sale del mismo presupuesto.
+    """
+    study = normalize_effort(spec, effort)
+    return visible_tokens + _THINKING_RESERVE.get(study, 0)
 
 
 def tool_choice_for(spec: ProviderSpec, force: bool) -> str:
@@ -609,6 +661,24 @@ class ChatRuntime:
     answer_params: Dict[str, Any]
     source: str
 
+    def answer_cap(self, visible_tokens: int) -> int:
+        """``max_completion_tokens`` de la redacción, con sitio para pensar."""
+        return answer_token_cap(self.provider, self.effort, visible_tokens)
+
+    def retry_params(self) -> Dict[str, Any]:
+        """
+        Params de la SEGUNDA pasada de redacción, la de rescate.
+
+        Con el esfuerzo mínimo del proveedor: si la primera se quedó sin
+        presupuesto pensando, insistir con el mismo esfuerzo repetiría el mismo
+        final. ``{}`` si el proveedor no acepta el parámetro (modelos clásicos).
+        """
+        if not self.answer_params:
+            return {}
+        if not self.provider.min_answer_effort:
+            return {}
+        return {"reasoning_effort": self.provider.min_answer_effort}
+
     def metadata(self) -> Dict[str, Any]:
         """Lo que se expone por SSE. Nunca la key."""
         return {
@@ -715,6 +785,7 @@ __all__ = [
     "PROVIDERS",
     "DEFAULT_PROVIDER",
     "DEFAULT_EFFORT",
+    "RETRY_RESERVE",
     "EFFORT_IDS",
     "EFFORT_LABELS",
     "OPENAI",
@@ -724,6 +795,7 @@ __all__ = [
     "normalize_effort",
     "native_effort",
     "effort_params",
+    "answer_token_cap",
     "tool_choice_for",
     "is_usable_key",
     "build_runtime",

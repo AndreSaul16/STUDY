@@ -15,7 +15,9 @@ import pytest
 
 from app.services.ai.chat_providers import (
     echo_assistant_message,
+    answer_token_cap,
     DEFAULT_EFFORT,
+    MINIMAX,
     EFFORT_IDS,
     GOOGLE,
     OPENAI,
@@ -112,6 +114,80 @@ class TestEffortParams:
     def test_vacio_no_manda_el_parametro_en_ninguna_ronda(self, spec):
         # Los modelos clásicos (gpt-4o-mini) lo rechazan de plano.
         assert effort_params(spec, "") == ({}, {})
+
+
+class TestAnswerTokenCap:
+    """
+    El tope de la redacción tiene que dejarle sitio al pensamiento.
+
+    ``max_completion_tokens`` no limita el texto que ve el usuario: limita TODO
+    lo que produce el modelo, razonamiento incluido. Con el modo "comentario"
+    (900 tokens) y esfuerzo alto, Gemini se gastaba los 900 pensando y cerraba
+    el stream sin escribir nada.
+    """
+
+    def test_sin_razonar_el_tope_es_el_del_modo(self):
+        assert answer_token_cap(OPENAI, "ninguno", 900) == 900
+
+    def test_vacio_tampoco_reserva_nada(self):
+        # Modelos clásicos: no piensan, no hace falta holgura.
+        assert answer_token_cap(OPENAI, "", 900) == 900
+
+    @pytest.mark.parametrize("spec", [OPENAI, GOOGLE, MINIMAX])
+    @pytest.mark.parametrize("effort", ["bajo", "medio", "alto", "maximo"])
+    def test_razonar_levanta_el_techo(self, spec, effort):
+        assert answer_token_cap(spec, effort, 900) > 900
+
+    def test_a_mas_esfuerzo_mas_holgura(self):
+        topes = [
+            answer_token_cap(OPENAI, e, 900)
+            for e in ("ninguno", "bajo", "medio", "alto", "maximo")
+        ]
+        assert topes == sorted(topes)
+        assert len(set(topes)) == len(topes)
+
+    def test_un_esfuerzo_basura_no_revienta_el_tope(self):
+        # Degrada a DEFAULT_EFFORT como el resto de la capa.
+        assert answer_token_cap(OPENAI, "turbo", 900) == answer_token_cap(
+            OPENAI, DEFAULT_EFFORT, 900
+        )
+
+
+class TestMinAnswerEffort:
+    """El valor del reintento tiene que ser uno que el endpoint acepte."""
+
+    def test_google_no_reintenta_con_minimal(self):
+        # "minimal" es vocabulario nativo de Gemini, no del enum de la capa de
+        # compatibilidad (none/low/medium/high). Mismo motivo por el que
+        # tool_round_effort dejó de mandarlo.
+        assert GOOGLE.min_answer_effort == "low"
+
+    def test_openai_reintenta_sin_razonar(self):
+        assert OPENAI.min_answer_effort == "none"
+
+    @pytest.mark.parametrize("spec", [OPENAI, GOOGLE, MINIMAX])
+    def test_el_minimo_es_un_esfuerzo_que_el_proveedor_conoce(self, spec):
+        assert spec.min_answer_effort in set(spec.effort_map.values())
+
+
+class TestRetryParams:
+    def test_el_reintento_baja_el_esfuerzo(self):
+        runtime = build_runtime("google", FAKE_GOOGLE_KEY, effort="alto")
+
+        assert runtime.answer_params == {"reasoning_effort": "high"}
+        assert runtime.retry_params() == {"reasoning_effort": "low"}
+
+    def test_sin_razonamiento_no_hay_nada_que_bajar(self):
+        # Un modelo clásico: el reintento iría con los mismos params y
+        # `chat_service` lo descarta por eso mismo.
+        runtime = build_runtime("openai", FAKE_OPENAI_KEY, effort="")
+
+        assert runtime.retry_params() == runtime.answer_params == {}
+
+    def test_el_tope_de_la_redaccion_sale_del_runtime(self):
+        runtime = build_runtime("google", FAKE_GOOGLE_KEY, effort="alto")
+
+        assert runtime.answer_cap(900) == answer_token_cap(GOOGLE, "alto", 900)
 
 
 class TestToolChoice:

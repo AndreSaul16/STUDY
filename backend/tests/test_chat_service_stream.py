@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 
 import pytest
 
+from app.services.ai.chat_providers import OPENAI, answer_token_cap, native_effort
 from app.services.ai.chat_service import ChatService
 from app.services.ai.local_library import from_payload
 
@@ -28,13 +29,14 @@ class _Delta:
 
 
 class _Choice:
-    def __init__(self, content: str | None):
+    def __init__(self, content: str | None, finish_reason: str | None = None):
         self.delta = _Delta(content)
+        self.finish_reason = finish_reason
 
 
 class _Chunk:
-    def __init__(self, content: str | None):
-        self.choices = [_Choice(content)]
+    def __init__(self, content: str | None, finish_reason: str | None = None):
+        self.choices = [_Choice(content, finish_reason)]
         self.usage = None
 
 
@@ -65,18 +67,37 @@ class _Stream:
 
 
 class _Completions:
-    def __init__(self, *, revienta: bool = False, textos: List[str] | None = None):
+    def __init__(
+        self,
+        *,
+        revienta: bool = False,
+        textos: List[str] | None = None,
+        tandas: List[List[str]] | None = None,
+    ):
         self._revienta = revienta
         self._textos = textos if textos is not None else ["Hola."]
+        #: Un lote de trozos por cada llamada CON streaming, para poder ensayar
+        #: una primera pasada vacía y una segunda que sí escribe. Cuando se
+        #: agotan, se repite el último.
+        self._tandas = tandas
         #: Los `messages` de cada llamada. Es la única forma de comprobar qué
         #: se le puso delante al modelo sin salir a la red.
         self.llamadas: List[List[Dict[str, Any]]] = []
+        #: Los kwargs completos, para comprobar topes y params de razonamiento.
+        self.kwargs: List[Dict[str, Any]] = []
+        self._streams = 0
 
     async def create(self, **kwargs):
         self.llamadas.append(list(kwargs.get("messages") or []))
+        self.kwargs.append(dict(kwargs))
         if self._revienta:
             raise RuntimeError("el proveedor dice que no")
         if kwargs.get("stream"):
+            if self._tandas:
+                indice = min(self._streams, len(self._tandas) - 1)
+                self._streams += 1
+                return _Stream(self._tandas[indice])
+            self._streams += 1
             return _Stream(self._textos)
         return _Respuesta("")
 
@@ -90,16 +111,34 @@ class _Cliente:
 class _Runtime:
     """Lo justo de ``ChatRuntime`` que usa ``chat_stream``."""
 
-    def __init__(self, client, inline_reasoning: bool = False):
+    def __init__(
+        self, client, inline_reasoning: bool = False, effort: str = ""
+    ):
         self.client = client
         self.model = "modelo-de-prueba"
+        #: Id STUDY. "" = este modelo no acepta `reasoning_effort` (gpt-4o-mini).
+        self.effort = effort
         self.tool_params: Dict[str, Any] = {}
-        self.answer_params: Dict[str, Any] = {}
+        self.answer_params: Dict[str, Any] = (
+            {"reasoning_effort": native_effort(OPENAI, effort)} if effort else {}
+        )
         # `chat_stream` mira `provider.inline_reasoning` para saber si tiene
         # que limpiar los bloques <think> del stream (MiniMax los emite).
         self.provider = SimpleNamespace(
-            id="openai", inline_reasoning=inline_reasoning
+            id="openai",
+            inline_reasoning=inline_reasoning,
+            min_answer_effort=OPENAI.min_answer_effort,
         )
+
+    # Los cálculos reales, no una copia: si la holgura del pensamiento cambia,
+    # estos tests hablan de la holgura de verdad.
+    def answer_cap(self, visible_tokens: int) -> int:
+        return answer_token_cap(OPENAI, self.effort, visible_tokens)
+
+    def retry_params(self) -> Dict[str, Any]:
+        if not self.answer_params or not OPENAI.min_answer_effort:
+            return {}
+        return {"reasoning_effort": OPENAI.min_answer_effort}
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -268,3 +307,121 @@ async def _con_biblioteca(servicio, runtime) -> List[str]:
             local_snippets=fragmentos,
         )
     ]
+
+
+# ─── La redacción vacía ──────────────────────────────────────────
+#
+# El fallo real: Gemini 3.6-flash con esfuerzo "alto" en el modo "comentario"
+# (900 tokens). El razonamiento sale del MISMO presupuesto que la respuesta, así
+# que se gastaba los 900 pensando y cerraba el stream sin un solo token. El
+# backend emitía un `done` limpio, el cliente lo daba por bueno y borraba el
+# rastro de herramientas: la pantalla quedaba igual que antes de preguntar,
+# "como si nunca hubiera investigado".
+
+
+class TestRedaccionVacia:
+    @pytest.mark.asyncio
+    async def test_una_redaccion_vacia_no_pasa_por_turno_bueno(self, servicio):
+        runtime = _Runtime(_Cliente(textos=[]))
+
+        tipos = _tipos(await _recoger(servicio, runtime))
+
+        assert "token" not in tipos
+        assert "error" in tipos
+        assert tipos[-1] == "done"
+
+    @pytest.mark.asyncio
+    async def test_el_error_dice_que_hacer(self, servicio):
+        runtime = _Runtime(_Cliente(textos=[]))
+
+        eventos = await _recoger(servicio, runtime)
+
+        error = next(e for e in eventos if e.startswith("event: error"))
+        assert "esfuerzo" in error
+
+    @pytest.mark.asyncio
+    async def test_solo_espacios_cuenta_como_vacio(self, servicio):
+        runtime = _Runtime(_Cliente(textos=["   ", "\n"]))
+
+        tipos = _tipos(await _recoger(servicio, runtime))
+
+        assert "error" in tipos
+
+    @pytest.mark.asyncio
+    async def test_se_reintenta_sin_razonar_y_se_rescata_el_turno(self, servicio):
+        # Primera pasada vacía (se gastó el presupuesto pensando), segunda con
+        # el esfuerzo mínimo: escribe.
+        runtime = _Runtime(
+            _Cliente(tandas=[[], ["Rescatado."]]), effort="alto"
+        )
+
+        eventos = await _recoger(servicio, runtime)
+
+        tipos = _tipos(eventos)
+        assert "token" in tipos
+        assert "error" not in tipos
+        # Dos pasadas de redacción, la segunda sin el esfuerzo alto.
+        redacciones = [
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        ]
+        assert len(redacciones) == 2
+        assert redacciones[0]["reasoning_effort"] == "high"
+        assert redacciones[1]["reasoning_effort"] == OPENAI.min_answer_effort
+
+    @pytest.mark.asyncio
+    async def test_no_se_reintenta_si_la_primera_pasada_escribio_algo(self, servicio):
+        runtime = _Runtime(
+            _Cliente(tandas=[["Ya vale."], ["No debería llegar aquí."]]),
+            effort="alto",
+        )
+
+        eventos = await _recoger(servicio, runtime)
+
+        tokens = [e for e in eventos if e.startswith("event: token")]
+        assert len(tokens) == 1
+        assert "Ya vale." in tokens[0]
+        redacciones = [
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        ]
+        assert len(redacciones) == 1
+
+    @pytest.mark.asyncio
+    async def test_sin_razonamiento_no_hay_segunda_pasada(self, servicio):
+        """Sin `reasoning_effort` el reintento no cambiaría nada: no se hace."""
+        runtime = _Runtime(_Cliente(tandas=[[], ["Rescatado."]]))
+
+        await _recoger(servicio, runtime)
+
+        redacciones = [
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        ]
+        assert len(redacciones) == 1
+
+
+class TestTopeDeTokensDeLaRedaccion:
+    @pytest.mark.asyncio
+    async def test_el_pensamiento_no_se_come_el_tope_de_la_respuesta(self, servicio):
+        """
+        El modo "comentario" quiere 900 tokens de TEXTO. Con esfuerzo alto el
+        tope que se manda tiene que ser mayor, o el modelo se queda sin sitio
+        para escribir después de pensar.
+        """
+        runtime = _Runtime(_Cliente(textos=["Hola."]), effort="alto")
+
+        await _recoger(servicio, runtime)
+
+        redaccion = next(
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        )
+        assert redaccion["max_completion_tokens"] > 900
+
+    @pytest.mark.asyncio
+    async def test_sin_razonar_el_tope_es_el_del_modo(self, servicio):
+        runtime = _Runtime(_Cliente(textos=["Hola."]), effort="ninguno")
+
+        await _recoger(servicio, runtime)
+
+        redaccion = next(
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        )
+        assert redaccion["max_completion_tokens"] == 900
