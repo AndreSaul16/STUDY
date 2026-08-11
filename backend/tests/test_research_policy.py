@@ -10,8 +10,10 @@ import pytest
 from app.services.ai.chat_modes import CHAT_MODES, get_mode
 from app.services.ai.research_policy import (
     budget_exhausted,
+    compact_tool_results,
     executed_tool_names,
     research_gap,
+    research_tokens,
     tool_cache_key,
 )
 
@@ -201,3 +203,88 @@ class TestUnSoloCatalogo:
         ]
 
         assert research_gap(executed_tool_names(mensajes), get_mode("analisis")) is None
+
+
+class TestResearchTokens:
+    """
+    Lo único que crece sin techo dentro de un turno es lo consultado. Medirlo es
+    lo que permite darle al modelo sitio para pensar en proporción a lo que
+    tiene que releer antes de redactar.
+    """
+
+    def test_solo_cuenta_los_resultados_de_herramienta(self):
+        mensajes = [
+            {"role": "system", "content": "x" * 4000},
+            {"role": "user", "content": "y" * 4000},
+            _assistant_call("abrir_documento"),
+            {"role": "tool", "tool_call_id": "call_1", "content": "z" * 4000},
+        ]
+
+        assert research_tokens(mensajes) == 1000
+
+    def test_sin_investigacion_no_hay_nada_que_reservar(self):
+        assert research_tokens([{"role": "user", "content": "hola"}]) == 0
+
+    def test_crece_con_los_documentos(self):
+        uno = [{"role": "tool", "content": "a" * 12_000}]
+        diez = [{"role": "tool", "content": "a" * 12_000} for _ in range(10)]
+
+        assert research_tokens(diez) == 10 * research_tokens(uno)
+
+    @pytest.mark.parametrize("basura", [None, [], [{"role": "tool"}], ["no soy dict"]])
+    def test_la_basura_no_revienta_la_cuenta(self, basura):
+        assert research_tokens(basura) == 0
+
+
+class TestCompactToolResults:
+    """
+    El recorte del rescate: cuando el modelo cerró el stream sin escribir,
+    volver a pedírselo con el mismo material delante le hace pensar otra vez lo
+    mismo y acabar igual.
+    """
+
+    def test_recorta_los_resultados_grandes(self):
+        mensajes = [{"role": "tool", "content": "a" * 12_000}]
+
+        recortado = compact_tool_results(mensajes, 2000)
+
+        assert len(recortado[0]["content"]) < 2200
+        assert recortado[0]["content"].startswith("a" * 2000)
+
+    def test_avisa_de_que_esta_cortado(self):
+        # Sin la marca, el modelo cita párrafos y páginas como si tuviera el
+        # documento entero delante.
+        recortado = compact_tool_results([{"role": "tool", "content": "a" * 9000}], 100)
+
+        assert "recortado" in recortado[0]["content"]
+
+    def test_los_resultados_pequenos_pasan_intactos(self):
+        # Un versículo o un listado de búsqueda no son el problema.
+        mensajes = [{"role": "tool", "tool_call_id": "c1", "content": "Isaías 58:12"}]
+
+        assert compact_tool_results(mensajes, 2000) == mensajes
+
+    def test_no_toca_los_demas_mensajes(self):
+        mensajes = [
+            {"role": "system", "content": "s" * 9000},
+            _assistant_call("abrir_documento"),
+            {"role": "user", "content": "u" * 9000},
+        ]
+
+        assert compact_tool_results(mensajes, 100) == mensajes
+
+    def test_no_modifica_la_lista_original(self):
+        # La primera pasada tiene que poder usarla tal cual.
+        original = [{"role": "tool", "tool_call_id": "c1", "content": "a" * 9000}]
+
+        compact_tool_results(original, 100)
+
+        assert len(original[0]["content"]) == 9000
+
+    def test_conserva_el_tool_call_id(self):
+        # Sin él, el proveedor no puede casar el resultado con su llamada.
+        recortado = compact_tool_results(
+            [{"role": "tool", "tool_call_id": "c1", "content": "a" * 9000}], 100
+        )
+
+        assert recortado[0]["tool_call_id"] == "c1"

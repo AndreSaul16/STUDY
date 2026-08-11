@@ -35,7 +35,6 @@ from typing import AsyncGenerator, Dict, Any, Iterator, List, Optional, Sequence
 from .chat_modes import DEFAULT_MODE, CHAT_MODES, ModeSpec, get_mode, list_modes
 from .chat_providers import (
     PROVIDERS,
-    RETRY_RESERVE,
     ChatRuntime,
     ReasoningStripper,
     build_runtime,
@@ -51,8 +50,10 @@ from .redaction import provider_error_message, redact
 from .research_config import ResearchConfig
 from .research_policy import (
     budget_exhausted,
+    compact_tool_results,
     executed_tool_names,
     research_gap,
+    research_tokens,
     tool_cache_key,
 )
 from .source_tracker import SourceTracker
@@ -179,6 +180,16 @@ _WRITE_NOW = (
     "completa con el formato del modo, usando lo que has encontrado. No pidas "
     "más herramientas: no quedan rondas."
 )
+
+#: Cuánto se le deja de CADA resultado de herramienta en la pasada de rescate.
+#:
+#: ``native_tools`` ya recorta cada documento a 12 000 caracteres, pero diez
+#: documentos son 120 000 —unos 30 000 tokens— que el modelo tiene que releer
+#: entero antes de escribir una palabra. Ese es el turno que se queda sin
+#: redactar. En el rescate se le da la cabeza de cada uno: ya los leyó una vez,
+#: las fuentes están registradas en el tracker y en los chips, y la alternativa
+#: a una respuesta con menos material delante es ninguna respuesta.
+_RESCUE_TOOL_CHARS = 2000
 
 _FOLLOWUPS_PROMPT = (
     "Devuelve SOLO un array JSON con 3 preguntas breves (máx. 9 palabras cada "
@@ -643,26 +654,55 @@ class ChatService:
 
         # ─── Ronda final: respuesta en streaming SIN tools ────────────
         #
-        # Dos pasadas como máximo. La segunda solo ocurre si la primera no
-        # escribió NADA, y va con el esfuerzo mínimo del proveedor y con
-        # holgura de sobra: el caso real era un Gemini con esfuerzo alto que se
-        # gastaba los 900 tokens del modo "comentario" pensando y cerraba el
-        # stream vacío. Insistir con los mismos parámetros habría dado lo mismo.
         # Solo si de verdad se investigó: sin ninguna ronda de herramientas el
         # historial no acaba en un `tool` y este recordatorio sobraría.
         if rounds_with_tools:
             full_messages.append({"role": "system", "content": _WRITE_NOW})
 
-        visible_cap = min(OPENAI_MAX_TOKENS, mode_spec.max_tokens)
-        pasadas: list[tuple[Dict[str, Any], int]] = [
-            (runtime.answer_params, runtime.answer_cap(visible_cap)),
+        # El tope de la redacción sale del MODO, no de OPENAI_MAX_TOKENS. Esa
+        # variable es el presupuesto de las rondas CON herramientas —2000 sobra
+        # para pedir una llamada— y aplicarla aquí recortaba por debajo lo que
+        # el modo ya había calculado para la pieza: "analisis" pide 2200 y
+        # "discurso" 2600. La investigación profunda nunca la aplicó, y es una
+        # de las razones por las que sí redacta con el mismo modelo.
+        visible_cap = mode_spec.max_tokens
+
+        # Cuánta investigación tiene delante el modelo. Es lo que decide de
+        # verdad cuánto va a pensar antes de escribir, y es la variable que
+        # faltaba en la cuenta: los turnos que se quedaban sin redactar eran
+        # justo los de investigación larga.
+        investigado = research_tokens(full_messages)
+
+        # DOS pasadas, siempre. Antes la segunda dependía de que el esfuerzo se
+        # pudiera bajar (`retry_params() != answer_params`), y en las
+        # configuraciones más comunes no se podía: con OpenAI y esfuerzo
+        # "ninguno" —el valor por defecto de la interfaz—, con MiniMax en
+        # "bajo", o con un modelo clásico sin el parámetro, el rescate salía
+        # idéntico y se descartaba. El turno se jugaba entero a una sola carta,
+        # con el tope del modo (900 tokens en "comentario") compartido entre el
+        # razonamiento y el texto.
+        #
+        # Ahora el rescate existe siempre y cambia las tres cosas que puede
+        # cambiar: baja el esfuerzo si el proveedor lo permite, sube el techo, y
+        # sobre todo le da MENOS QUE LEER. Eso último es lo que no se había
+        # tocado nunca: reintentar con los mismos 30 000 tokens de documentos
+        # delante le hace pensar otra vez lo mismo y acabar igual.
+        mensajes_rescate = compact_tool_results(full_messages, _RESCUE_TOOL_CHARS)
+        pasadas: list[tuple[Dict[str, Any], int, list[Dict[str, Any]]]] = [
+            (
+                runtime.answer_params,
+                runtime.answer_cap(visible_cap, investigado),
+                full_messages,
+            ),
+            (
+                runtime.retry_params(),
+                runtime.retry_cap(visible_cap, investigado),
+                mensajes_rescate,
+            ),
         ]
-        rescate = runtime.retry_params()
-        if rescate != runtime.answer_params:
-            pasadas.append((rescate, visible_cap + RETRY_RESERVE))
 
         answer = ""
-        for intento, (params, cap) in enumerate(pasadas, start=1):
+        for intento, (params, cap, mensajes) in enumerate(pasadas, start=1):
             # MiniMax escribe su razonamiento dentro del contenido; sin esto el
             # usuario ve el monólogo interno delante de su comentario.
             limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
@@ -674,7 +714,7 @@ class ChatService:
             try:
                 final_stream = await runtime.client.chat.completions.create(
                     model=runtime.model,
-                    messages=full_messages,
+                    messages=mensajes,
                     max_completion_tokens=cap,
                     stream=True,
                     stream_options={"include_usage": True},
@@ -716,7 +756,8 @@ class ChatService:
             logger.warning(
                 "Redacción vacía (intento %s/%s): proveedor=%s modelo=%s "
                 "finish_reason=%s tope=%s params=%s rondas_de_tools=%s "
-                "mensajes=%s ultimo_rol=%s pidio_herramientas=%s",
+                "mensajes=%s ultimo_rol=%s pidio_herramientas=%s "
+                "tokens_de_investigacion=%s",
                 intento,
                 len(pasadas),
                 runtime.provider.id,
@@ -725,9 +766,10 @@ class ChatService:
                 cap,
                 params,
                 rounds_with_tools,
-                len(full_messages),
-                full_messages[-1].get("role") if full_messages else "-",
+                len(mensajes),
+                mensajes[-1].get("role") if mensajes else "-",
                 pidio_herramientas,
+                research_tokens(mensajes),
             )
 
         if not answer.strip():

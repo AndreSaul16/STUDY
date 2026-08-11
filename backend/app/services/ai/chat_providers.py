@@ -465,18 +465,65 @@ _THINKING_RESERVE: Dict[str, int] = {
 #: con el esfuerzo mínimo del proveedor y con sitio de sobra.
 RETRY_RESERVE = _THINKING_RESERVE["maximo"]
 
+#: Cuánto piensa el modelo EN FUNCIÓN DE LO QUE TIENE QUE LEER.
+#:
+#: La tabla de arriba trata el razonamiento como una constante del esfuerzo, y
+#: no lo es: razonar sobre un versículo no cuesta lo mismo que releer diez
+#: artículos de investigación antes de redactar. Esa es exactamente la
+#: diferencia entre el turno que escribe y el que cierra el stream vacío —el
+#: usuario lo vio así: "cuando la investigación es larga"—, y era la variable
+#: que no entraba en la cuenta. Medio token de pensamiento por token leído es
+#: una holgura, no una medida.
+_THINKING_PER_RESEARCH_TOKEN = 0.5
+
+#: Techo absoluto de la holgura. Pasarse de generoso no cuesta tokens (el
+#: modelo para cuando termina), pero ``max_completion_tokens`` sí tiene un
+#: máximo por modelo y un 400 aquí tumbaría el turno que se intenta salvar.
+_MAX_THINKING_RESERVE = 24576
+
 
 def answer_token_cap(
-    spec: ProviderSpec, effort: Optional[str], visible_tokens: int
+    spec: ProviderSpec,
+    effort: Optional[str],
+    visible_tokens: int,
+    research_tokens: int = 0,
 ) -> int:
     """
     ``max_completion_tokens`` de la ronda de redacción.
 
     ``visible_tokens`` es lo que el modo quiere que ocupe la RESPUESTA; a eso se
     le suma la holgura del pensamiento, que sale del mismo presupuesto.
+
+    ``research_tokens`` es lo que ocupa la investigación que el modelo tiene
+    delante. Cuanto más material haya consultado, más va a pensar antes de
+    escribir, así que la holgura crece con él en vez de quedarse en la constante
+    del esfuerzo.
     """
     study = normalize_effort(spec, effort)
-    return visible_tokens + _THINKING_RESERVE.get(study, 0)
+    if not study:
+        # Modelo clásico (gpt-4o-mini): no razona, así que no hay pensamiento
+        # que reservar. Y su tope de salida es pequeño: levantarle el techo no
+        # le daría nada y sí podría costarle un 400.
+        return visible_tokens
+
+    reserva = max(
+        _THINKING_RESERVE.get(study, 0),
+        int(max(0, research_tokens) * _THINKING_PER_RESEARCH_TOKEN),
+    )
+    return visible_tokens + min(reserva, _MAX_THINKING_RESERVE)
+
+
+#: Orden de los valores NATIVOS de ``reasoning_effort``, de menos a más. Existe
+#: para una sola cosa: que la pasada de rescate no suba nunca el esfuerzo de la
+#: que acaba de quedarse sin sitio (ver ``ChatRuntime.retry_params``).
+_EFFORT_RANK: Dict[str, int] = {
+    "none": 0,
+    "minimal": 1,
+    "low": 2,
+    "medium": 3,
+    "high": 4,
+    "xhigh": 5,
+}
 
 
 def tool_choice_for(spec: ProviderSpec, force: bool) -> str:
@@ -661,9 +708,25 @@ class ChatRuntime:
     answer_params: Dict[str, Any]
     source: str
 
-    def answer_cap(self, visible_tokens: int) -> int:
+    def answer_cap(self, visible_tokens: int, research_tokens: int = 0) -> int:
         """``max_completion_tokens`` de la redacción, con sitio para pensar."""
-        return answer_token_cap(self.provider, self.effort, visible_tokens)
+        return answer_token_cap(
+            self.provider, self.effort, visible_tokens, research_tokens
+        )
+
+    def retry_cap(self, visible_tokens: int, research_tokens: int = 0) -> int:
+        """
+        Tope de la pasada de RESCATE: el de la primera, pero nunca por debajo
+        de la holgura máxima.
+
+        Un modelo que no razona no gana nada con más techo (``answer_params``
+        vacío = no acepta ``reasoning_effort``), así que ahí se queda en el del
+        modo: subírselo solo arriesga un 400 sin arreglar nada.
+        """
+        base = self.answer_cap(visible_tokens, research_tokens)
+        if not self.answer_params:
+            return base
+        return max(base, visible_tokens + RETRY_RESERVE)
 
     def retry_params(self) -> Dict[str, Any]:
         """
@@ -672,12 +735,28 @@ class ChatRuntime:
         Con el esfuerzo mínimo del proveedor: si la primera se quedó sin
         presupuesto pensando, insistir con el mismo esfuerzo repetiría el mismo
         final. ``{}`` si el proveedor no acepta el parámetro (modelos clásicos).
+
+        Nunca POR ENCIMA de lo que ya se intentó. En Google, "ninguno" se
+        aplica como "minimal" y el mínimo del proveedor es "low": el rescate le
+        SUBÍA el esfuerzo a la pasada que acababa de quedarse sin sitio para
+        escribir, que es justo lo contrario de lo que hace falta.
+
+        Que esto devuelva lo mismo que ``answer_params`` ya NO significa que no
+        haya rescate: quien llama hace la segunda pasada igualmente, porque
+        cambia el tope y, sobre todo, cuánto tiene que leer el modelo.
         """
         if not self.answer_params:
             return {}
         if not self.provider.min_answer_effort:
+            # ``None`` = no mandar el parámetro, que es el esfuerzo más bajo
+            # posible: sigue siendo una relajación de verdad.
             return {}
-        return {"reasoning_effort": self.provider.min_answer_effort}
+
+        minimo = self.provider.min_answer_effort
+        aplicado = str(self.answer_params.get("reasoning_effort") or "")
+        if _EFFORT_RANK.get(aplicado, 99) < _EFFORT_RANK.get(minimo, 99):
+            return dict(self.answer_params)
+        return {"reasoning_effort": minimo}
 
     def metadata(self) -> Dict[str, Any]:
         """Lo que se expone por SSE. Nunca la key."""

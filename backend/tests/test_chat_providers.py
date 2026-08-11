@@ -153,6 +153,47 @@ class TestAnswerTokenCap:
         )
 
 
+class TestLaHolguraCreceConLaInvestigacion:
+    """
+    La tabla del esfuerzo trata el razonamiento como una constante, y no lo es:
+    releer diez artículos antes de redactar cuesta mucho más que razonar sobre
+    un versículo. Esa era la diferencia entre el turno que escribía y el que
+    cerraba el stream vacío — "cuando la investigación es larga".
+    """
+
+    #: Diez documentos del tamaño real (`_MAX_DOC_CHARS` = 12 000 caracteres).
+    LARGA = 30_000
+
+    @pytest.mark.parametrize("spec", [OPENAI, GOOGLE, MINIMAX])
+    def test_una_investigacion_larga_levanta_el_techo(self, spec):
+        assert answer_token_cap(spec, "alto", 2200, self.LARGA) > answer_token_cap(
+            spec, "alto", 2200
+        )
+
+    def test_sin_investigacion_el_tope_es_el_de_siempre(self):
+        assert answer_token_cap(OPENAI, "alto", 2200, 0) == answer_token_cap(
+            OPENAI, "alto", 2200
+        )
+
+    def test_un_modelo_clasico_no_gana_techo(self):
+        # No razona: la holgura no le daría nada y su tope de salida es
+        # pequeño, así que subírselo solo arriesga un 400.
+        assert answer_token_cap(OPENAI, "", 900, self.LARGA) == 900
+
+    def test_la_holgura_tiene_techo(self):
+        # `max_completion_tokens` tiene un máximo por modelo: una holgura sin
+        # límite tumbaría el turno que intenta salvar.
+        absurdo = answer_token_cap(OPENAI, "maximo", 2200, 10_000_000)
+
+        assert absurdo < 2200 + 32_768
+
+    def test_nunca_baja_de_la_holgura_del_esfuerzo(self):
+        # Una investigación corta no puede recortar lo que el esfuerzo ya pedía.
+        assert answer_token_cap(OPENAI, "maximo", 900, 100) == answer_token_cap(
+            OPENAI, "maximo", 900
+        )
+
+
 class TestMinAnswerEffort:
     """El valor del reintento tiene que ser uno que el endpoint acepte."""
 
@@ -178,16 +219,49 @@ class TestRetryParams:
         assert runtime.retry_params() == {"reasoning_effort": "low"}
 
     def test_sin_razonamiento_no_hay_nada_que_bajar(self):
-        # Un modelo clásico: el reintento iría con los mismos params y
-        # `chat_service` lo descarta por eso mismo.
+        # Un modelo clásico: el reintento va con los mismos params. Ya NO se
+        # descarta por eso — lo que cambia en el rescate es cuánto tiene que
+        # leer el modelo.
         runtime = build_runtime("openai", FAKE_OPENAI_KEY, effort="")
 
         assert runtime.retry_params() == runtime.answer_params == {}
+
+    def test_el_rescate_nunca_sube_el_esfuerzo(self):
+        # En Google "ninguno" se aplica como "minimal" y el mínimo del
+        # proveedor es "low": el rescate le SUBÍA el esfuerzo a la pasada que
+        # acababa de quedarse sin sitio para escribir.
+        runtime = build_runtime("google", FAKE_GOOGLE_KEY, effort="ninguno")
+
+        assert runtime.answer_params == {"reasoning_effort": "minimal"}
+        assert runtime.retry_params() == {"reasoning_effort": "minimal"}
+
+    @pytest.mark.parametrize("spec", [OPENAI, GOOGLE, MINIMAX])
+    @pytest.mark.parametrize("effort", EFFORT_IDS)
+    def test_el_rescate_nunca_pide_mas_esfuerzo_que_la_primera(self, spec, effort):
+        runtime = build_runtime(spec.id, FAKE_OPENAI_KEY, effort=effort)
+        orden = ["none", "minimal", "low", "medium", "high", "xhigh"]
+
+        primera = runtime.answer_params.get("reasoning_effort")
+        rescate = runtime.retry_params().get("reasoning_effort")
+
+        assert orden.index(rescate) <= orden.index(primera)
 
     def test_el_tope_de_la_redaccion_sale_del_runtime(self):
         runtime = build_runtime("google", FAKE_GOOGLE_KEY, effort="alto")
 
         assert runtime.answer_cap(900) == answer_token_cap(GOOGLE, "alto", 900)
+
+    def test_el_rescate_no_baja_nunca_el_techo_de_la_primera(self):
+        # Con una investigación larga la primera pasada ya lleva mucha holgura;
+        # el rescate no puede darle MENOS sitio que la que acaba de fallar.
+        runtime = build_runtime("openai", FAKE_OPENAI_KEY, effort="alto")
+
+        assert runtime.retry_cap(2200, 30_000) >= runtime.answer_cap(2200, 30_000)
+
+    def test_un_modelo_clasico_no_gana_techo_en_el_rescate(self):
+        runtime = build_runtime("openai", FAKE_OPENAI_KEY, effort="")
+
+        assert runtime.retry_cap(900, 30_000) == 900
 
 
 class TestToolChoice:

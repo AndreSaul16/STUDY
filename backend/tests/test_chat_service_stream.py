@@ -16,7 +16,16 @@ from typing import Any, Dict, List
 
 import pytest
 
-from app.services.ai.chat_providers import OPENAI, answer_token_cap, native_effort
+from app.services.ai.chat_modes import get_mode
+from app.services.ai.chat_providers import (
+    GOOGLE,
+    OPENAI,
+    ChatRuntime,
+    ProviderSpec,
+    effort_params,
+    native_effort,
+    normalize_effort,
+)
 from app.services.ai.chat_service import TOOL_FAILED, ChatService, tool_failed
 from app.services.ai.local_library import from_payload
 
@@ -134,47 +143,31 @@ class _Cliente:
         self.chat = type("Chat", (), {"completions": self.completions})()
 
 
-class _Runtime:
-    """Lo justo de ``ChatRuntime`` que usa ``chat_stream``."""
+def _Runtime(client, effort: str = "", provider: ProviderSpec = OPENAI) -> ChatRuntime:
+    """
+    Un ``ChatRuntime`` de verdad, con un cliente de mentira.
 
-    def __init__(
-        self, client, inline_reasoning: bool = False, effort: str = ""
-    ):
-        self.client = client
-        self.model = "modelo-de-prueba"
-        #: Id STUDY. "" = este modelo no acepta `reasoning_effort` (gpt-4o-mini).
-        self.effort = effort
-        self.tool_params: Dict[str, Any] = {}
-        self.answer_params: Dict[str, Any] = (
-            {"reasoning_effort": native_effort(OPENAI, effort)} if effort else {}
-        )
-        # `chat_stream` mira `provider.inline_reasoning` para saber si tiene
-        # que limpiar los bloques <think> del stream (MiniMax los emite).
-        self.provider = SimpleNamespace(
-            id="openai",
-            inline_reasoning=inline_reasoning,
-            min_answer_effort=OPENAI.min_answer_effort,
-            supports_tool_choice_required=OPENAI.supports_tool_choice_required,
-        )
+    Antes esto era una clase que reimplementaba ``answer_cap`` y
+    ``retry_params``. Esa copia es justo donde se esconden los fallos que estos
+    tests deberían cazar: la primera versión del rescate se descartaba sola en
+    la mitad de las configuraciones reales y aquí no se veía. Con el runtime
+    auténtico, cualquier cambio en la política de topes o de esfuerzo pasa por
+    estos tests.
 
-    # Los cálculos reales, no una copia: si la holgura del pensamiento cambia,
-    # estos tests hablan de la holgura de verdad.
-    def answer_cap(self, visible_tokens: int) -> int:
-        return answer_token_cap(OPENAI, self.effort, visible_tokens)
-
-    def retry_params(self) -> Dict[str, Any]:
-        if not self.answer_params or not OPENAI.min_answer_effort:
-            return {}
-        return {"reasoning_effort": OPENAI.min_answer_effort}
-
-    def metadata(self) -> Dict[str, Any]:
-        return {
-            "provider": "openai",
-            "model": self.model,
-            "effort": "alto",
-            "effort_applied": "high",
-            "source": "server",
-        }
+    ``effort`` es un id STUDY; "" = este modelo no acepta ``reasoning_effort``
+    (gpt-4o-mini).
+    """
+    tool_params, answer_params = effort_params(provider, effort)
+    return ChatRuntime(
+        provider=provider,
+        client=client,
+        model="modelo-de-prueba",
+        effort=normalize_effort(provider, effort),
+        effort_applied=native_effort(provider, effort),
+        tool_params=tool_params,
+        answer_params=answer_params,
+        source="server",
+    )
 
 
 async def _recoger(servicio, runtime) -> List[str]:
@@ -413,16 +406,60 @@ class TestRedaccionVacia:
         assert len(redacciones) == 1
 
     @pytest.mark.asyncio
-    async def test_sin_razonamiento_no_hay_segunda_pasada(self, servicio):
-        """Sin `reasoning_effort` el reintento no cambiaría nada: no se hace."""
+    async def test_sin_razonamiento_tambien_hay_rescate(self, servicio):
+        """
+        El rescate ya no depende de que el esfuerzo se pueda bajar.
+
+        Era la trampa: `retry_params()` devolvía lo mismo que `answer_params` y
+        la segunda pasada se descartaba entera. Pasaba con un modelo clásico
+        (sin el parámetro), con OpenAI en esfuerzo "ninguno" —el valor por
+        defecto de la interfaz— y con MiniMax en "bajo". O sea, en la mayoría de
+        las configuraciones reales el turno se jugaba a una sola carta.
+        """
         runtime = _Runtime(_Cliente(tandas=[[], ["Rescatado."]]))
+
+        eventos = await _recoger(servicio, runtime)
+
+        assert "token" in _tipos(eventos)
+        redacciones = [
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        ]
+        assert len(redacciones) == 2
+
+    @pytest.mark.asyncio
+    async def test_con_esfuerzo_minimo_tambien_hay_rescate(self, servicio):
+        """OpenAI en "ninguno": el rescate no puede bajar más, pero existe."""
+        runtime = _Runtime(_Cliente(tandas=[[], ["Rescatado."]]), effort="ninguno")
+
+        eventos = await _recoger(servicio, runtime)
+
+        assert "token" in _tipos(eventos)
+        redacciones = [
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        ]
+        assert len(redacciones) == 2
+        # No puede bajar el esfuerzo, así que lo que cambia es el techo.
+        assert redacciones[1]["max_completion_tokens"] > redacciones[0][
+            "max_completion_tokens"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_el_rescate_nunca_sube_el_esfuerzo(self, servicio):
+        """
+        En Google, "ninguno" se aplica como "minimal" y el mínimo del proveedor
+        es "low": el rescate le SUBÍA el esfuerzo a la pasada que acababa de
+        quedarse sin sitio para escribir.
+        """
+        runtime = _Runtime(
+            _Cliente(tandas=[[], ["Rescatado."]]), effort="ninguno", provider=GOOGLE
+        )
 
         await _recoger(servicio, runtime)
 
         redacciones = [
             k for k in runtime.client.completions.kwargs if k.get("stream")
         ]
-        assert len(redacciones) == 1
+        assert redacciones[1]["reasoning_effort"] == "minimal"
 
 
 class TestTopeDeTokensDeLaRedaccion:
@@ -452,6 +489,168 @@ class TestTopeDeTokensDeLaRedaccion:
             k for k in runtime.client.completions.kwargs if k.get("stream")
         )
         assert redaccion["max_completion_tokens"] == 900
+
+    @pytest.mark.asyncio
+    async def test_el_tope_ya_no_lo_recorta_la_variable_de_las_rondas(
+        self, servicio
+    ):
+        """
+        ``OPENAI_MAX_TOKENS`` (2000) es el presupuesto de las rondas CON
+        herramientas y recortaba también la redacción, por debajo de lo que el
+        modo había calculado para la pieza. La investigación profunda nunca la
+        aplicó, y redacta bien con el mismo modelo.
+        """
+        runtime = _Runtime(_Cliente(textos=["Hola."]), effort="ninguno")
+
+        eventos = [
+            e
+            async for e in servicio.chat_stream(
+                [{"role": "user", "content": "hola"}],
+                mode="discurso",
+                runtime=runtime,
+            )
+        ]
+        assert eventos  # el turno se completó
+
+        redaccion = next(
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        )
+        assert redaccion["max_completion_tokens"] == get_mode("discurso").max_tokens
+
+
+# ─── La investigación larga ──────────────────────────────────────
+#
+# El fallo que se repetía: cuanta más investigación acumulaba el turno, más
+# probable era que la redacción llegara vacía. La causa no estaba en el modo ni
+# en el esfuerzo, sino en que ninguno de los dos entraba en la cuenta de lo
+# ÚNICO que crece dentro de un turno: los documentos consultados. Diez artículos
+# son ~30 000 tokens que el modelo tiene que releer antes de escribir una
+# palabra, y pensar sobre eso cuesta mucho más que la holgura fija del esfuerzo.
+
+
+class TestInvestigacionLarga:
+    @pytest.fixture()
+    def servicio_con_tools(self, servicio):
+        servicio.tools = [
+            {
+                "type": "function",
+                "function": {"name": "abrir_documento", "parameters": {}},
+            }
+        ]
+        return servicio
+
+    @pytest.fixture()
+    def documentos(self, monkeypatch):
+        """Cada herramienta devuelve un documento del tamaño real (12 000)."""
+
+        async def gordo(self, name, args, config=None):
+            return json.dumps({"texto": "a" * 12_000})
+
+        monkeypatch.setattr(ChatService, "_run_tool", gordo)
+
+    @pytest.mark.asyncio
+    async def test_mas_investigacion_deja_mas_sitio_para_pensar(
+        self, servicio_con_tools, servicio, documentos
+    ):
+        """
+        Mismo modo y mismo esfuerzo: lo único que cambia es cuánto ha leído el
+        modelo. La holgura del pensamiento tiene que crecer con eso, porque es
+        lo que crece de verdad dentro de un turno.
+        """
+        tres_por_ronda = [["abrir_documento"] * 3] * 3  # nueve documentos
+        con_investigacion = _Runtime(
+            _Cliente(rondas=tres_por_ronda, textos=["Redactado."]), effort="alto"
+        )
+        sin_investigacion = _Runtime(_Cliente(textos=["Redactado."]), effort="alto")
+
+        await _recoger(servicio_con_tools, con_investigacion)
+        await _recoger(servicio, sin_investigacion)
+
+        largo = next(
+            k for k in con_investigacion.client.completions.kwargs if k.get("stream")
+        )
+        corto = next(
+            k for k in sin_investigacion.client.completions.kwargs if k.get("stream")
+        )
+        assert largo["max_completion_tokens"] > corto["max_completion_tokens"]
+
+    @pytest.mark.asyncio
+    async def test_el_rescate_le_da_menos_que_leer(
+        self, servicio_con_tools, documentos
+    ):
+        """
+        Reintentar con los mismos 30 000 tokens delante le hace pensar otra vez
+        lo mismo y acabar igual. Lo único que cambia de verdad las condiciones
+        es darle menos material.
+        """
+        runtime = _Runtime(
+            _Cliente(
+                rondas=[["abrir_documento"], ["abrir_documento"]],
+                tandas=[[], ["Rescatado."]],
+            ),
+            effort="alto",
+        )
+
+        eventos = await _recoger(servicio_con_tools, runtime)
+
+        assert "token" in _tipos(eventos)
+        assert "error" not in _tipos(eventos)
+        redacciones = [
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        ]
+        assert len(redacciones) == 2
+        primera = _tamano_de_las_herramientas(redacciones[0]["messages"])
+        segunda = _tamano_de_las_herramientas(redacciones[1]["messages"])
+        assert segunda < primera / 2
+
+    @pytest.mark.asyncio
+    async def test_el_recorte_se_avisa_y_no_toca_la_primera_pasada(
+        self, servicio_con_tools, documentos
+    ):
+        runtime = _Runtime(
+            _Cliente(
+                rondas=[["abrir_documento"]],
+                tandas=[[], ["Rescatado."]],
+            ),
+            effort="alto",
+        )
+
+        await _recoger(servicio_con_tools, runtime)
+
+        redacciones = [
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        ]
+        primera = [m for m in redacciones[0]["messages"] if m.get("role") == "tool"]
+        segunda = [m for m in redacciones[1]["messages"] if m.get("role") == "tool"]
+        # La primera pasada ve el documento entero: el recorte es del rescate.
+        assert len(primera[0]["content"]) == len(json.dumps({"texto": "a" * 12_000}))
+        # Y el modelo tiene que saber que lo que ve está cortado, o citará
+        # párrafos y páginas como si tuviera el documento entero delante.
+        assert "recortado" in segunda[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_el_recordatorio_de_redactar_sobrevive_al_recorte(
+        self, servicio_con_tools, documentos
+    ):
+        runtime = _Runtime(
+            _Cliente(rondas=[["abrir_documento"]], tandas=[[], ["Rescatado."]]),
+            effort="alto",
+        )
+
+        await _recoger(servicio_con_tools, runtime)
+
+        redacciones = [
+            k for k in runtime.client.completions.kwargs if k.get("stream")
+        ]
+        ultimo = redacciones[1]["messages"][-1]
+        assert ultimo["role"] == "system"
+        assert "Redacta AHORA" in ultimo["content"]
+
+
+def _tamano_de_las_herramientas(mensajes: List[Dict[str, Any]]) -> int:
+    return sum(
+        len(m.get("content") or "") for m in mensajes if m.get("role") == "tool"
+    )
 
 
 # ─── La caché de herramientas ────────────────────────────────────
