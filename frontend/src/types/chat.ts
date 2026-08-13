@@ -75,6 +75,8 @@ export interface ChatMessageMeta {
   effort?: string;
   /** Esfuerzo que el proveedor aplicó de verdad ("high"). Puede diferir. */
   effortApplied?: string;
+  /** Herramientas ejecutadas en el turno (búsquedas, documentos, vídeos). */
+  toolCalls?: number;
   /** Informe de investigación profunda: cambia cómo se presenta el mensaje. */
   deep?: boolean;
   /** Publicaciones leídas en un informe profundo. */

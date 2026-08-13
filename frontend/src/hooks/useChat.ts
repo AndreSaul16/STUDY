@@ -379,8 +379,15 @@ function parseMeta(raw: Record<string, unknown>): ChatMessageMeta | undefined {
     model: text("model"),
     effort: text("effort"),
     effortApplied: text("effort_applied"),
+    // Cuántas herramientas ejecutó el turno. Persistido con el mensaje: es lo
+    // que permite saber, releyendo una conversación vieja, si la respuesta
+    // salió de una investigación o del modelo a pelo.
+    toolCalls:
+      typeof raw.tool_calls === "number" && raw.tool_calls >= 0
+        ? raw.tool_calls
+        : undefined,
   };
-  return Object.values(meta).some(Boolean) ? meta : undefined;
+  return Object.values(meta).some((v) => v !== undefined) ? meta : undefined;
 }
 
 /**
@@ -504,6 +511,13 @@ export function useChat(): UseChatReturn {
             case "tool_call": {
               const name = String(parsed.data.name ?? "");
               if (!name) break;
+              // En consola además de en los chips: los chips desaparecen al
+              // terminar el turno y esto es lo que permite comprobar, después,
+              // si el modelo buscó de verdad en vídeos y publicaciones.
+              traza("turno", "herramienta", conversationId, {
+                nombre: name,
+                argumentos: describeArgs(parsed.data.arguments),
+              });
               chat.pushActivity(
                 { name, detail: describeArgs(parsed.data.arguments) },
                 conversationId,
@@ -513,6 +527,10 @@ export function useChat(): UseChatReturn {
             case "tool_result": {
               const name = String(parsed.data.name ?? "");
               if (!name) break;
+              traza("turno", "resultado", conversationId, {
+                nombre: name,
+                resumen: String(parsed.data.summary ?? ""),
+              });
               chat.completeActivity(
                 name,
                 String(parsed.data.summary ?? ""),
@@ -520,12 +538,14 @@ export function useChat(): UseChatReturn {
               );
               break;
             }
-            case "sources":
-              chat.setPendingSources(
-                parseSources(parsed.data.items),
-                conversationId,
-              );
+            case "sources": {
+              const sources = parseSources(parsed.data.items);
+              traza("turno", "fuentes", conversationId, {
+                fuentes: sources.length,
+              });
+              chat.setPendingSources(sources, conversationId);
               break;
+            }
             case "suggestions":
               suggestions = parseStringList(parsed.data.items);
               break;
@@ -535,6 +555,10 @@ export function useChat(): UseChatReturn {
               // una conversación de hace un mes no hay forma de saber si la
               // escribió el modelo bueno o el barato.
               meta = parseMeta(parsed.data);
+              traza("turno", "investigación hecha", conversationId, {
+                herramientas: meta?.toolCalls ?? 0,
+                modelo: meta?.model ?? "(desconocido)",
+              });
               break;
             case "token":
               fullContent += String(parsed.data.text ?? "");
