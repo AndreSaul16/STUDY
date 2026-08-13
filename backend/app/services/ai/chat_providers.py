@@ -440,79 +440,6 @@ def effort_params(
     return tool_params, {"reasoning_effort": applied}
 
 
-#: Tokens EXTRA que hay que dejarle al pensamiento en la ronda de redacción.
-#:
-#: ``max_completion_tokens`` NO es el tope del texto que ve el usuario: es el
-#: tope de todo lo que produce el modelo, razonamiento incluido (OpenAI lo dice
-#: literalmente —"includes reasoning tokens"— y ``maxOutputTokens`` de Gemini
-#: 2.5+/3 se comporta igual). Un modo con 900 tokens y esfuerzo "alto" puede
-#: gastárselos enteros pensando y cerrar el stream sin escribir una palabra: eso
-#: es exactamente lo que se veía —turno cerrado con 0 caracteres, sin error, sin
-#: rastro de la investigación que sí se había hecho—.
-#:
-#: Son holguras, no medidas: el modelo para cuando termina de pensar, así que
-#: pasarse de generoso no cuesta tokens, solo levanta el techo. Quedarse corto
-#: sí cuesta: cuesta la respuesta entera.
-_THINKING_RESERVE: Dict[str, int] = {
-    "ninguno": 0,
-    "bajo": 1024,
-    "medio": 3072,
-    "alto": 8192,
-    "maximo": 12288,
-}
-
-#: Holgura del reintento: cuando la primera pasada no escribió nada, se vuelve
-#: con el esfuerzo mínimo del proveedor y con sitio de sobra.
-RETRY_RESERVE = _THINKING_RESERVE["maximo"]
-
-#: Cuánto piensa el modelo EN FUNCIÓN DE LO QUE TIENE QUE LEER.
-#:
-#: La tabla de arriba trata el razonamiento como una constante del esfuerzo, y
-#: no lo es: razonar sobre un versículo no cuesta lo mismo que releer diez
-#: artículos de investigación antes de redactar. Esa es exactamente la
-#: diferencia entre el turno que escribe y el que cierra el stream vacío —el
-#: usuario lo vio así: "cuando la investigación es larga"—, y era la variable
-#: que no entraba en la cuenta. Medio token de pensamiento por token leído es
-#: una holgura, no una medida.
-_THINKING_PER_RESEARCH_TOKEN = 0.5
-
-#: Techo absoluto de la holgura. Pasarse de generoso no cuesta tokens (el
-#: modelo para cuando termina), pero ``max_completion_tokens`` sí tiene un
-#: máximo por modelo y un 400 aquí tumbaría el turno que se intenta salvar.
-_MAX_THINKING_RESERVE = 24576
-
-
-def answer_token_cap(
-    spec: ProviderSpec,
-    effort: Optional[str],
-    visible_tokens: int,
-    research_tokens: int = 0,
-) -> int:
-    """
-    ``max_completion_tokens`` de la ronda de redacción.
-
-    ``visible_tokens`` es lo que el modo quiere que ocupe la RESPUESTA; a eso se
-    le suma la holgura del pensamiento, que sale del mismo presupuesto.
-
-    ``research_tokens`` es lo que ocupa la investigación que el modelo tiene
-    delante. Cuanto más material haya consultado, más va a pensar antes de
-    escribir, así que la holgura crece con él en vez de quedarse en la constante
-    del esfuerzo.
-    """
-    study = normalize_effort(spec, effort)
-    if not study:
-        # Modelo clásico (gpt-4o-mini): no razona, así que no hay pensamiento
-        # que reservar. Y su tope de salida es pequeño: levantarle el techo no
-        # le daría nada y sí podría costarle un 400.
-        return visible_tokens
-
-    reserva = max(
-        _THINKING_RESERVE.get(study, 0),
-        int(max(0, research_tokens) * _THINKING_PER_RESEARCH_TOKEN),
-    )
-    return visible_tokens + min(reserva, _MAX_THINKING_RESERVE)
-
-
 #: Orden de los valores NATIVOS de ``reasoning_effort``, de menos a más. Existe
 #: para una sola cosa: que la pasada de rescate no suba nunca el esfuerzo de la
 #: que acaba de quedarse sin sitio (ver ``ChatRuntime.retry_params``).
@@ -708,26 +635,6 @@ class ChatRuntime:
     answer_params: Dict[str, Any]
     source: str
 
-    def answer_cap(self, visible_tokens: int, research_tokens: int = 0) -> int:
-        """``max_completion_tokens`` de la redacción, con sitio para pensar."""
-        return answer_token_cap(
-            self.provider, self.effort, visible_tokens, research_tokens
-        )
-
-    def retry_cap(self, visible_tokens: int, research_tokens: int = 0) -> int:
-        """
-        Tope de la pasada de RESCATE: el de la primera, pero nunca por debajo
-        de la holgura máxima.
-
-        Un modelo que no razona no gana nada con más techo (``answer_params``
-        vacío = no acepta ``reasoning_effort``), así que ahí se queda en el del
-        modo: subírselo solo arriesga un 400 sin arreglar nada.
-        """
-        base = self.answer_cap(visible_tokens, research_tokens)
-        if not self.answer_params:
-            return base
-        return max(base, visible_tokens + RETRY_RESERVE)
-
     def retry_params(self) -> Dict[str, Any]:
         """
         Params de la SEGUNDA pasada de redacción, la de rescate.
@@ -742,8 +649,8 @@ class ChatRuntime:
         escribir, que es justo lo contrario de lo que hace falta.
 
         Que esto devuelva lo mismo que ``answer_params`` ya NO significa que no
-        haya rescate: quien llama hace la segunda pasada igualmente, porque
-        cambia el tope y, sobre todo, cuánto tiene que leer el modelo.
+        haya rescate en el chat: ahí la segunda pasada se hace igualmente,
+        porque cambia cuánto tiene que leer el modelo.
         """
         if not self.answer_params:
             return {}
@@ -864,7 +771,6 @@ __all__ = [
     "PROVIDERS",
     "DEFAULT_PROVIDER",
     "DEFAULT_EFFORT",
-    "RETRY_RESERVE",
     "EFFORT_IDS",
     "EFFORT_LABELS",
     "OPENAI",
@@ -874,7 +780,6 @@ __all__ = [
     "normalize_effort",
     "native_effort",
     "effort_params",
-    "answer_token_cap",
     "tool_choice_for",
     "is_usable_key",
     "build_runtime",

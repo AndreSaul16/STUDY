@@ -32,8 +32,6 @@ class ModeSpec:
     """Placeholder del composer: qué se espera que escriba el usuario."""
     prompt: str
     """Plantilla que se inyecta en el system prompt."""
-    max_tokens: int
-    """Techo de la respuesta final. Un comentario de 75 palabras no necesita 2000."""
     min_tool_rounds: int
     """Rondas de investigación mínimas antes de dar por buena la redacción."""
     followups: tuple[str, ...]
@@ -190,7 +188,6 @@ CHAT_MODES: dict[str, ModeSpec] = {
         label="Análisis con referencias",
         hint="Pregunta lo que quieras y busco en las publicaciones",
         prompt=_ANALISIS_PROMPT,
-        max_tokens=2200,
         min_tool_rounds=2,
         followups=(
             "¿Qué dice el contexto del capítulo?",
@@ -208,7 +205,6 @@ CHAT_MODES: dict[str, ModeSpec] = {
         label="Comentario de 30 s",
         hint="Pega el punto o el versículo y te lo redacto",
         prompt=_COMENTARIO_PROMPT,
-        max_tokens=900,
         min_tool_rounds=2,
         followups=(
             "Dame una versión más corta",
@@ -226,7 +222,6 @@ CHAT_MODES: dict[str, ModeSpec] = {
         label="Ilustración",
         hint="Dime el punto y te busco una ilustración real",
         prompt=_ILUSTRACION_PROMPT,
-        max_tokens=1200,
         min_tool_rounds=2,
         followups=(
             "Dame otra ilustración distinta",
@@ -244,7 +239,6 @@ CHAT_MODES: dict[str, ModeSpec] = {
         label="Discurso o parte",
         hint="Dime el tema y la duración y te monto el guion",
         prompt=_DISCURSO_PROMPT,
-        max_tokens=2600,
         min_tool_rounds=3,
         followups=(
             "Alarga el paso 2",
@@ -264,7 +258,6 @@ CHAT_MODES: dict[str, ModeSpec] = {
         label="Investigación profunda",
         hint="Dime el tema y lo investigo a fondo (varios minutos)",
         prompt=_INVESTIGACION_PROMPT,
-        max_tokens=6000,
         min_tool_rounds=6,
         followups=(
             "Profundiza en el punto 2",

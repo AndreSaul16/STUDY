@@ -42,7 +42,6 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from .chat_modes import ModeSpec, get_mode
 from .chat_providers import (
-    RETRY_RESERVE,
     ChatRuntime,
     ReasoningStripper,
     echo_assistant_message,
@@ -113,9 +112,9 @@ _SYNTHESIS_SYSTEM = (
 #: investigación sí se hizo, y eso hay que decírselo: si no, parece que los tres
 #: minutos de espera no sirvieron para nada.
 _EMPTY_REPORT_MESSAGE = (
-    "La investigación terminó pero el modelo no llegó a redactar el informe: se "
-    "quedó sin espacio al razonar. Prueba a bajar el esfuerzo de razonamiento "
-    "en Ajustes de IA y vuelve a lanzarla."
+    "La investigación terminó pero el modelo no llegó a redactar el informe. "
+    "Vuelve a lanzarla; si se repite, prueba otro modelo o baja el esfuerzo "
+    "de razonamiento en Ajustes de IA."
 )
 
 
@@ -362,7 +361,6 @@ async def _plan_subquestions(
                 *messages,
                 {"role": "user", "content": _PLAN_PROMPT.format(n=_MAX_PLAN_ITEMS - 1)},
             ],
-            max_completion_tokens=500,
             **runtime.tool_params,
         )
     except Exception as exc:
@@ -491,7 +489,6 @@ async def run_research(
                         messages=full_messages,
                         tools=tools,
                         tool_choice=tool_choice_for(runtime.provider, force),
-                        max_completion_tokens=2000,
                         **runtime.tool_params,
                     )
                 except Exception as exc:
@@ -607,29 +604,26 @@ async def run_research(
             }
         )
 
-        # Dos pasadas, igual que en el chat y por el mismo motivo: el tope de
-        # tokens lo comparten el razonamiento y el texto, así que con esfuerzo
-        # alto el modelo puede gastárselo entero pensando y cerrar el stream
-        # sin escribir el informe. Aquí duele más: son tres minutos de trabajo,
-        # y un `done` con la respuesta vacía se tira por el desagüe sin dejar
-        # rastro (el cliente no guarda mensaje si no hay texto).
-        pasadas: list[tuple[Dict[str, Any], int]] = [
-            (runtime.answer_params, runtime.answer_cap(mode_spec.max_tokens)),
-        ]
+        # La redacción va SIN tope de tokens, igual que en el chat y por el
+        # mismo motivo: `max_completion_tokens` limita también el razonamiento,
+        # y con esfuerzo alto el modelo podía gastárselo entero pensando y
+        # cerrar el stream sin escribir el informe. Aquí dolía más: son tres
+        # minutos de trabajo tirados por el desagüe. La segunda pasada queda
+        # como rescate con el esfuerzo mínimo del proveedor.
+        pasadas: list[Dict[str, Any]] = [runtime.answer_params]
         rescate = runtime.retry_params()
         if rescate != runtime.answer_params:
-            pasadas.append((rescate, mode_spec.max_tokens + RETRY_RESERVE))
+            pasadas.append(rescate)
 
         answer = ""
         fallo_del_proveedor = False
-        for intento, (params, cap) in enumerate(pasadas, start=1):
+        for intento, params in enumerate(pasadas, start=1):
             limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
             motivo: Optional[str] = None
             try:
                 stream = await runtime.client.chat.completions.create(
                     model=runtime.model,
                     messages=full_messages,
-                    max_completion_tokens=cap,
                     stream=True,
                     stream_options={"include_usage": True},
                     **params,
@@ -663,12 +657,11 @@ async def run_research(
                 break
 
             logger.warning(
-                "Informe vacío (intento %s/%s): modelo=%s finish_reason=%s tope=%s",
+                "Informe vacío (intento %s/%s): modelo=%s finish_reason=%s",
                 intento,
                 len(pasadas),
                 runtime.model,
                 motivo,
-                cap,
             )
 
         if fallo_del_proveedor:

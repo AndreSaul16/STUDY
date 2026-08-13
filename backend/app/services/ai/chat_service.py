@@ -75,7 +75,6 @@ logger = logging.getLogger(__name__)
 # Configuración OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "2000"))
 
 # ─── reasoning_effort ────────────────────────────────────────────
 # Los modelos de razonamiento (gpt-5.x, o-series) aceptan reasoning_effort con
@@ -290,12 +289,13 @@ def parse_followups(raw: str, fallback: Sequence[str]) -> List[str]:
 
 
 #: Qué se le dice al usuario cuando el modelo cierra el stream sin escribir una
-#: sola palabra, ni siquiera en el reintento. Accionable, porque él SÍ puede
-#: hacer algo: bajar el esfuerzo o elegir un modo con más espacio.
+#: sola palabra, ni siquiera en el reintento. La redacción ya va sin tope de
+#: tokens, así que esto ya no es "sin espacio": es el proveedor devolviendo un
+#: stream vacío. Accionable igualmente: reintentar o cambiar de modelo.
 _EMPTY_ANSWER_MESSAGE = (
-    "El modelo terminó sin escribir la respuesta. La investigación se hizo, "
-    "pero se quedó sin espacio para redactar: prueba a bajar el esfuerzo de "
-    "razonamiento en Ajustes de IA, o vuelve a intentarlo."
+    "El modelo terminó sin escribir la respuesta aunque la investigación se "
+    "hizo. Vuelve a intentarlo; si se repite, prueba otro modelo o baja el "
+    "esfuerzo de razonamiento en Ajustes de IA."
 )
 
 #: Mensaje del 503 cuando no hay ni key de cliente ni de servidor. Accionable:
@@ -416,7 +416,6 @@ class ChatService:
                     {"role": "assistant", "content": answer},
                     {"role": "user", "content": _FOLLOWUPS_PROMPT},
                 ],
-                max_completion_tokens=200,
                 **runtime.tool_params,
             )
         except Exception as exc:
@@ -531,7 +530,6 @@ class ChatService:
                         messages=full_messages,
                         tools=tools,
                         tool_choice=tool_choice,
-                        max_completion_tokens=OPENAI_MAX_TOKENS,
                         **runtime.tool_params,
                     )
                 except Exception as exc:
@@ -659,50 +657,33 @@ class ChatService:
         if rounds_with_tools:
             full_messages.append({"role": "system", "content": _WRITE_NOW})
 
-        # El tope de la redacción sale del MODO, no de OPENAI_MAX_TOKENS. Esa
-        # variable es el presupuesto de las rondas CON herramientas —2000 sobra
-        # para pedir una llamada— y aplicarla aquí recortaba por debajo lo que
-        # el modo ya había calculado para la pieza: "analisis" pide 2200 y
-        # "discurso" 2600. La investigación profunda nunca la aplicó, y es una
-        # de las razones por las que sí redacta con el mismo modelo.
-        visible_cap = mode_spec.max_tokens
-
-        # Cuánta investigación tiene delante el modelo. Es lo que decide de
-        # verdad cuánto va a pensar antes de escribir, y es la variable que
-        # faltaba en la cuenta: los turnos que se quedaban sin redactar eran
-        # justo los de investigación larga.
-        investigado = research_tokens(full_messages)
+        # La redacción va SIN tope de tokens. `max_completion_tokens` no limita
+        # el texto que ve el usuario: limita TODO lo que produce el modelo,
+        # razonamiento incluido, y cada tope que se calculó aquí acabó
+        # produciendo la misma avería con otra cara: el modelo gastaba el
+        # presupuesto pensando y cerraba el stream sin escribir. El modelo para
+        # solo cuando termina; la longitud de la pieza la marca el prompt del
+        # modo, y el techo real es el máximo de salida del propio modelo.
 
         # DOS pasadas, siempre. Antes la segunda dependía de que el esfuerzo se
         # pudiera bajar (`retry_params() != answer_params`), y en las
         # configuraciones más comunes no se podía: con OpenAI y esfuerzo
         # "ninguno" —el valor por defecto de la interfaz—, con MiniMax en
         # "bajo", o con un modelo clásico sin el parámetro, el rescate salía
-        # idéntico y se descartaba. El turno se jugaba entero a una sola carta,
-        # con el tope del modo (900 tokens en "comentario") compartido entre el
-        # razonamiento y el texto.
+        # idéntico y se descartaba. El turno se jugaba entero a una sola carta.
         #
-        # Ahora el rescate existe siempre y cambia las tres cosas que puede
-        # cambiar: baja el esfuerzo si el proveedor lo permite, sube el techo, y
-        # sobre todo le da MENOS QUE LEER. Eso último es lo que no se había
-        # tocado nunca: reintentar con los mismos 30 000 tokens de documentos
-        # delante le hace pensar otra vez lo mismo y acabar igual.
+        # El rescate cambia las dos cosas que puede cambiar: baja el esfuerzo
+        # si el proveedor lo permite y, sobre todo, le da MENOS QUE LEER.
+        # Reintentar con los mismos 30 000 tokens de documentos delante le hace
+        # pensar otra vez lo mismo y acabar igual.
         mensajes_rescate = compact_tool_results(full_messages, _RESCUE_TOOL_CHARS)
-        pasadas: list[tuple[Dict[str, Any], int, list[Dict[str, Any]]]] = [
-            (
-                runtime.answer_params,
-                runtime.answer_cap(visible_cap, investigado),
-                full_messages,
-            ),
-            (
-                runtime.retry_params(),
-                runtime.retry_cap(visible_cap, investigado),
-                mensajes_rescate,
-            ),
+        pasadas: list[tuple[Dict[str, Any], list[Dict[str, Any]]]] = [
+            (runtime.answer_params, full_messages),
+            (runtime.retry_params(), mensajes_rescate),
         ]
 
         answer = ""
-        for intento, (params, cap, mensajes) in enumerate(pasadas, start=1):
+        for intento, (params, mensajes) in enumerate(pasadas, start=1):
             # MiniMax escribe su razonamiento dentro del contenido; sin esto el
             # usuario ve el monólogo interno delante de su comentario.
             limpiador = ReasoningStripper(runtime.provider.inline_reasoning)
@@ -715,7 +696,6 @@ class ChatService:
                 final_stream = await runtime.client.chat.completions.create(
                     model=runtime.model,
                     messages=mensajes,
-                    max_completion_tokens=cap,
                     stream=True,
                     stream_options={"include_usage": True},
                     **params,
@@ -755,7 +735,7 @@ class ChatService:
 
             logger.warning(
                 "Redacción vacía (intento %s/%s): proveedor=%s modelo=%s "
-                "finish_reason=%s tope=%s params=%s rondas_de_tools=%s "
+                "finish_reason=%s params=%s rondas_de_tools=%s "
                 "mensajes=%s ultimo_rol=%s pidio_herramientas=%s "
                 "tokens_de_investigacion=%s",
                 intento,
@@ -763,7 +743,6 @@ class ChatService:
                 runtime.provider.id,
                 runtime.model,
                 motivo,
-                cap,
                 params,
                 rounds_with_tools,
                 len(mensajes),

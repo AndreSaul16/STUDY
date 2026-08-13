@@ -60,15 +60,9 @@ class TestModeSpecs:
         assert spec.label.strip()
         assert spec.hint.strip()
         assert spec.prompt.strip()
-        assert spec.max_tokens > 0
         assert spec.min_tool_rounds >= 1
         assert spec.followups
         assert spec.examples
-
-    def test_el_comentario_tiene_el_techo_de_tokens_mas_bajo(self):
-        # 75 palabras no necesitan 2200 tokens; el techo es parte del contrato.
-        assert CHAT_MODES["comentario"].max_tokens < CHAT_MODES["analisis"].max_tokens
-        assert CHAT_MODES["discurso"].max_tokens > CHAT_MODES["analisis"].max_tokens
 
 
 class TestListModes:

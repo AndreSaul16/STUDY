@@ -16,7 +16,6 @@ from typing import Any, Dict, List
 
 import pytest
 
-from app.services.ai.chat_modes import get_mode
 from app.services.ai.chat_providers import (
     GOOGLE,
     OPENAI,
@@ -438,10 +437,6 @@ class TestRedaccionVacia:
             k for k in runtime.client.completions.kwargs if k.get("stream")
         ]
         assert len(redacciones) == 2
-        # No puede bajar el esfuerzo, así que lo que cambia es el techo.
-        assert redacciones[1]["max_completion_tokens"] > redacciones[0][
-            "max_completion_tokens"
-        ]
 
     @pytest.mark.asyncio
     async def test_el_rescate_nunca_sube_el_esfuerzo(self, servicio):
@@ -464,58 +459,22 @@ class TestRedaccionVacia:
 
 class TestTopeDeTokensDeLaRedaccion:
     @pytest.mark.asyncio
-    async def test_el_pensamiento_no_se_come_el_tope_de_la_respuesta(self, servicio):
+    @pytest.mark.parametrize("effort", ["", "ninguno", "alto"])
+    async def test_la_redaccion_va_sin_tope(self, servicio, effort):
         """
-        El modo "comentario" quiere 900 tokens de TEXTO. Con esfuerzo alto el
-        tope que se manda tiene que ser mayor, o el modelo se queda sin sitio
-        para escribir después de pensar.
+        ``max_completion_tokens`` limita TODO lo que produce el modelo,
+        razonamiento incluido: cada tope que se calculó aquí acabó cerrando
+        streams sin una palabra escrita. La redacción va sin el parámetro y el
+        techo real es el máximo de salida del propio modelo.
         """
-        runtime = _Runtime(_Cliente(textos=["Hola."]), effort="alto")
+        runtime = _Runtime(_Cliente(textos=["Hola."]), effort=effort)
 
         await _recoger(servicio, runtime)
 
         redaccion = next(
             k for k in runtime.client.completions.kwargs if k.get("stream")
         )
-        assert redaccion["max_completion_tokens"] > 900
-
-    @pytest.mark.asyncio
-    async def test_sin_razonar_el_tope_es_el_del_modo(self, servicio):
-        runtime = _Runtime(_Cliente(textos=["Hola."]), effort="ninguno")
-
-        await _recoger(servicio, runtime)
-
-        redaccion = next(
-            k for k in runtime.client.completions.kwargs if k.get("stream")
-        )
-        assert redaccion["max_completion_tokens"] == 900
-
-    @pytest.mark.asyncio
-    async def test_el_tope_ya_no_lo_recorta_la_variable_de_las_rondas(
-        self, servicio
-    ):
-        """
-        ``OPENAI_MAX_TOKENS`` (2000) es el presupuesto de las rondas CON
-        herramientas y recortaba también la redacción, por debajo de lo que el
-        modo había calculado para la pieza. La investigación profunda nunca la
-        aplicó, y redacta bien con el mismo modelo.
-        """
-        runtime = _Runtime(_Cliente(textos=["Hola."]), effort="ninguno")
-
-        eventos = [
-            e
-            async for e in servicio.chat_stream(
-                [{"role": "user", "content": "hola"}],
-                mode="discurso",
-                runtime=runtime,
-            )
-        ]
-        assert eventos  # el turno se completó
-
-        redaccion = next(
-            k for k in runtime.client.completions.kwargs if k.get("stream")
-        )
-        assert redaccion["max_completion_tokens"] == get_mode("discurso").max_tokens
+        assert "max_completion_tokens" not in redaccion
 
 
 # ─── La investigación larga ──────────────────────────────────────
@@ -547,32 +506,6 @@ class TestInvestigacionLarga:
             return json.dumps({"texto": "a" * 12_000})
 
         monkeypatch.setattr(ChatService, "_run_tool", gordo)
-
-    @pytest.mark.asyncio
-    async def test_mas_investigacion_deja_mas_sitio_para_pensar(
-        self, servicio_con_tools, servicio, documentos
-    ):
-        """
-        Mismo modo y mismo esfuerzo: lo único que cambia es cuánto ha leído el
-        modelo. La holgura del pensamiento tiene que crecer con eso, porque es
-        lo que crece de verdad dentro de un turno.
-        """
-        tres_por_ronda = [["abrir_documento"] * 3] * 3  # nueve documentos
-        con_investigacion = _Runtime(
-            _Cliente(rondas=tres_por_ronda, textos=["Redactado."]), effort="alto"
-        )
-        sin_investigacion = _Runtime(_Cliente(textos=["Redactado."]), effort="alto")
-
-        await _recoger(servicio_con_tools, con_investigacion)
-        await _recoger(servicio, sin_investigacion)
-
-        largo = next(
-            k for k in con_investigacion.client.completions.kwargs if k.get("stream")
-        )
-        corto = next(
-            k for k in sin_investigacion.client.completions.kwargs if k.get("stream")
-        )
-        assert largo["max_completion_tokens"] > corto["max_completion_tokens"]
 
     @pytest.mark.asyncio
     async def test_el_rescate_le_da_menos_que_leer(
